@@ -102,7 +102,7 @@ impl<'a> From<&'a str> for &'a Str {
 
 impl From<&Str> for KdlValue {
   fn from(value: &Str) -> Self {
-    value.into()
+    KdlValue::from(&value.0)
   }
 }
 

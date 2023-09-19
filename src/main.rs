@@ -50,7 +50,7 @@ impl process::Termination for Error {
         K::BadManifest => 3,
         K::AlreadyPatched => 4,
         K::ManifestOutdated => 5,
-        K::PatchToolError => 6,
+        K::PatchingError => 6,
       },
       Error::ValidateError(_) => 2,
     })

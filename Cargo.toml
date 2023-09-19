@@ -10,6 +10,7 @@ description = "Easy ROM hack patching and auditing."
 clap = { version = "4.3.21", features = ["derive"] }
 const_format = "0.2.31"
 digest = "0.10.7"
+flips = "0.2.1"
 kdl = "4.6.0"
 kdl-schema = "0.1.0"
 kdl-schema-check = "0.1.0"

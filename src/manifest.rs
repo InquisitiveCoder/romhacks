@@ -123,29 +123,23 @@ pub fn update(
     })
     .ensure_children()
     .nodes_mut()
-    .push({
-      init(kdl::KdlNode::new(PATCH), |node| {
-        const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 4 + PATCH.len() + 1));
-        node.insert(0, patch.path.file_name());
-        node.insert(SHA_1, line_wrap(patch_digests.sha1(), INDENT));
-        node.insert(SHA_256, line_wrap(patch_digests.sha256(), INDENT));
-        let children = node.ensure_children().nodes_mut();
-        children.push({
-          init(kdl::KdlNode::new(HACK), |node| {
-            const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + HACK.len() + 1));
-            node.insert(URL, hack.url.as_str());
-            node.insert(VERSION, line_wrap(hack.version.as_str(), INDENT));
-          })
-        });
-        children.push({
-          init(kdl::KdlNode::new(RESULT), |result| {
-            const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + RESULT.len() + 1));
-            result.insert(SHA_1, patched_digests.sha1());
-            result.insert(SHA_256, line_wrap(patched_digests.sha256(), INDENT));
-          })
-        });
-      })
-    });
+    .push(init(kdl::KdlNode::new(PATCH), |node| {
+      const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 4 + PATCH.len() + 1));
+      node.insert(0, patch.path.file_name());
+      node.insert(SHA_1, line_wrap(patch_digests.sha1(), INDENT));
+      node.insert(SHA_256, line_wrap(patch_digests.sha256(), INDENT));
+      let children = node.ensure_children().nodes_mut();
+      children.push(init(kdl::KdlNode::new(HACK), |node| {
+        const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + HACK.len() + 1));
+        node.insert(URL, hack.url.as_str());
+        node.insert(VERSION, line_wrap(hack.version.as_str(), INDENT));
+      }));
+      children.push(init(kdl::KdlNode::new(RESULT), |node| {
+        const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + RESULT.len() + 1));
+        node.insert(SHA_1, patched_digests.sha1());
+        node.insert(SHA_256, line_wrap(patched_digests.sha256(), INDENT));
+      }));
+    }));
 }
 
 #[non_exhaustive]

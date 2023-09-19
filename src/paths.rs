@@ -106,6 +106,14 @@ impl AsRef<ffi::OsStr> for StrPath {
   }
 }
 
+impl ToOwned for StrPath {
+  type Owned = StrPathBuf;
+
+  fn to_owned(&self) -> Self::Owned {
+    StrPathBuf::from(self)
+  }
+}
+
 #[derive(Clone, Debug)]
 pub struct StrPathBuf(path::PathBuf);
 
@@ -201,6 +209,12 @@ where
   }
 }
 
+impl std::borrow::Borrow<StrPath> for StrPathBuf {
+  fn borrow(&self) -> &StrPath {
+    self.as_ref()
+  }
+}
+
 impl fmt::Display for StrPathBuf {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     write!(f, "{}", self.as_str())
@@ -266,6 +280,14 @@ impl AsRef<FilePath> for FilePath {
 impl fmt::Display for FilePath {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     self.0.fmt(f)
+  }
+}
+
+impl ToOwned for FilePath {
+  type Owned = FilePathBuf;
+
+  fn to_owned(&self) -> Self::Owned {
+    FilePathBuf::from(self)
   }
 }
 
@@ -349,6 +371,12 @@ where
 {
   fn as_ref(&self) -> &T {
     self.deref().as_ref()
+  }
+}
+
+impl std::borrow::Borrow<FilePath> for FilePathBuf {
+  fn borrow(&self) -> &FilePath {
+    self.as_ref()
   }
 }
 
