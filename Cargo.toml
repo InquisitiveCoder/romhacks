@@ -1,0 +1,25 @@
+[package]
+name = "romhacks"
+version = "0.1.0"
+edition = "2021"
+description = "Easy ROM hack patching and auditing."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.3.21", features = ["derive"] }
+const_format = "0.2.31"
+digest = "0.10.7"
+kdl = "4.6.0"
+kdl-schema = "0.1.0"
+kdl-schema-check = "0.1.0"
+log = "0.4.20"
+md5 = "0.7.0"
+miette = { version = "3.3.0", features = ["fancy"] }
+polonius-the-crab = "0.3.1"
+pretty_env_logger = "0.5.0"
+regex-lite = "0.1.0"
+sha1 = "0.10.5"
+sha2 = "0.10.7"
+thiserror = "1.0.48"
+url = "2.4.0"
