@@ -1,19 +1,21 @@
-use miette::Diagnostic;
+use crate::error::prelude::*;
 use std::process;
-use thiserror::Error;
 
 mod apply;
 mod cli;
+mod convert;
+mod error;
 mod filename;
 mod fs;
 mod hack;
+mod io;
 mod kdl;
 mod log;
 mod manifest;
+mod mem;
 mod patch;
-mod paths;
+mod path;
 mod sha;
-mod val;
 mod validate;
 
 fn main() -> miette::Result<()> {

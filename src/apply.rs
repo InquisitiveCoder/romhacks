@@ -1,13 +1,10 @@
-use crate::{filename, fs, hack, manifest, patch, paths, sha};
-use miette::Diagnostic;
-use patch::Tool as T;
-use thiserror::Error;
-use Error as E;
+use crate::error::prelude::*;
+use crate::{filename, fs, hack, manifest, patch, path, sha};
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Args {
   #[arg(short, long)]
-  pub rom: paths::FilePathBuf,
+  pub rom: path::FilePathBuf,
   #[arg(short, long)]
   pub patch: patch::Patch,
   #[command(flatten)]
@@ -31,45 +28,17 @@ impl Args {
       manifest::get_or_create(&manifest_path, &self.rom, &file_digests, &patch_digests)?;
 
     let backup_file = self.rom.clone().push_str(".bak").unwrap();
-    let backup_created = if self.no_backup || backup_file.exists() {
-      false
-    } else {
+    if !self.no_backup && !backup_file.exists() {
       fs::copy(&self.rom, &backup_file)?;
       log::info!(r#"Created backup file "{backup_file}""#);
-      true
-    };
-    let tool = patch::Tool::from_patch_kind(self.patch.kind);
-
-    let (result, temp_file_path) = match tool {
-      T::PatchInPlace(patcher) => (patcher(&self.rom, &self.patch), None),
-      T::PatchCopy(patcher) => {
-        if backup_created {
-          (patcher(&backup_file, &self.patch, &self.rom), None)
-        } else {
-          let mut temp_file = backup_file;
-          temp_file.set_extension("tmp");
-          log::info!(
-            r#"Can't patch {kind} files in place. Renaming "{rom}" to "{temp_file}"."#,
-            kind = self.patch.kind,
-            rom = &self.rom
-          );
-          fs::rename(&self.rom, &temp_file)?;
-          (patcher(&temp_file, &self.patch, &self.rom), Some(temp_file))
-        }
-      }
-    };
-
-    if let Some(temp_file_path) = temp_file_path {
-      if let Err(err) = fs::remove_file(&temp_file_path) {
-        log::warn!("Failed to remove temporary file \"{temp_file_path}\": {err}");
-      }
     }
 
-    result?;
+    let patcher = patch::Patcher::from_patch_kind(self.patch.kind);
+    patcher.patch(&self.rom, &self.patch)?;
 
     log::info!("ROM patched successfully.");
 
-    let patched_digests = sha::try_hash(&&self.rom)?;
+    let patched_digests = sha::try_hash(&self.rom)?;
     manifest::update(
       &mut doc,
       self.rom,
@@ -90,26 +59,26 @@ impl Args {
 pub enum Error {
   #[error(transparent)]
   #[diagnostic(transparent)]
-  ManifestError(#[from] manifest::Error),
+  Manifest(#[from] manifest::Error),
   #[error(transparent)]
   #[diagnostic(transparent)]
-  IOError(#[from] fs::Error),
+  IO(#[from] fs::Error),
   #[error(transparent)]
-  PatchingError(#[from] patch::Error),
+  Patching(#[from] patch::Error),
 }
 
 impl Error {
   pub fn get_kind(&self) -> ErrorKind {
     use ErrorKind as K;
     match &self {
-      E::ManifestError(e) => match e {
-        manifest::Error::IOError(_) => K::IOError,
-        manifest::Error::KdlError(_) => K::BadManifest,
+      Error::Manifest(e) => match e {
+        manifest::Error::IO(_) => K::IOError,
+        manifest::Error::Kdl(_) => K::BadManifest,
         manifest::Error::AlreadyPatched => K::AlreadyPatched,
         manifest::Error::ManifestOutdated => K::ManifestOutdated,
       },
-      E::IOError(_) => K::IOError,
-      E::PatchingError(_) => K::PatchingError,
+      Error::IO(_) => K::IOError,
+      Error::Patching(_) => K::PatchingError,
     }
   }
 }

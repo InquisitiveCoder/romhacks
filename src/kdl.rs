@@ -1,9 +1,12 @@
-use crate::val::init;
-use polonius_the_crab::*;
-
-pub use ::kdl::*;
+use crate::mem;
+pub use kdl::*;
 pub use kdl_schema::Schema;
 pub use kdl_schema_check::{CheckExt, CheckFailure};
+use polonius_the_crab::*;
+
+pub mod prelude {
+  pub use kdl_schema_check::CheckExt;
+}
 
 pub fn unwrap_children(node: &KdlNode) -> &[KdlNode] {
   node.children().unwrap().nodes()
@@ -34,14 +37,14 @@ where
   /// pushes it into `children` and returns a reference to it.
   pub fn get_or_insert<F>(self, mut children: &mut Vec<KdlNode>, builder: F) -> &mut KdlNode
   where
-    F: FnOnce(&mut KdlNode) -> (),
+    F: FnOnce(&mut KdlNode),
   {
     polonius!(|children| -> &'polonius mut KdlNode {
       if let Some(node) = children.iter_mut().find(|child| self == **child) {
         polonius_return!(node);
       }
     });
-    children.push(init(self.into(), builder));
+    children.push(mem::init(self.into(), builder));
     children.last_mut().unwrap()
   }
 }
@@ -67,7 +70,7 @@ where
   V: Into<KdlValue>,
 {
   fn from(desc: NodeId<N, K, V>) -> Self {
-    init(KdlNode::new(desc.name), |node| {
+    mem::init(KdlNode::new(desc.name), |node| {
       node.insert(desc.entry.0, desc.entry.1);
     })
   }

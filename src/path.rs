@@ -1,23 +1,25 @@
 use std::ops::Deref;
-use std::{ffi, fmt, path, str};
+use std::{ffi, fmt, str};
+
+pub use std::path::*;
 
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StrPath(path::Path);
+pub struct StrPath(Path);
 
 impl StrPath {
   pub fn new<S: AsRef<str> + ?Sized>(s: &S) -> &Self {
-    unsafe { Self::from_path_unchecked(path::Path::new(s.as_ref())) }
+    unsafe { Self::from_path_unchecked(Path::new(s.as_ref())) }
   }
 
   pub fn from_os_str<S: AsRef<ffi::OsStr> + ?Sized>(s: &S) -> Result<&Self, Error> {
-    path::Path::new(s).try_into()
+    Path::new(s).try_into()
   }
 
-  pub unsafe fn from_path_unchecked<P: AsRef<path::Path> + ?Sized>(path: &P) -> &Self {
-    unsafe { &*(path.as_ref() as *const path::Path as *const Self) }
+  pub unsafe fn from_path_unchecked<P: AsRef<Path> + ?Sized>(path: &P) -> &Self {
+    unsafe { &*(path.as_ref() as *const Path as *const Self) }
   }
 
-  pub fn as_path(&self) -> &path::Path {
+  pub fn as_path(&self) -> &Path {
     &self.0
   }
 
@@ -54,13 +56,13 @@ impl<'a> TryFrom<&'a ffi::OsStr> for &'a StrPath {
   type Error = Error;
 
   fn try_from(value: &'a ffi::OsStr) -> Result<Self, Self::Error> {
-    path::Path::new(value).try_into()
+    Path::new(value).try_into()
   }
 }
 
-impl<'a> TryFrom<&'a path::Path> for &'a StrPath {
+impl<'a> TryFrom<&'a Path> for &'a StrPath {
   type Error = Error;
-  fn try_from(value: &'a path::Path) -> Result<Self, Self::Error> {
+  fn try_from(value: &'a Path) -> Result<Self, Self::Error> {
     match value.to_str() {
       Some(_) => Ok(unsafe { StrPath::from_path_unchecked(value) }),
       None => Err(Error(Repr::NotUtf8)),
@@ -69,7 +71,7 @@ impl<'a> TryFrom<&'a path::Path> for &'a StrPath {
 }
 
 impl Deref for StrPath {
-  type Target = path::Path;
+  type Target = Path;
 
   fn deref(&self) -> &Self::Target {
     self.as_path()
@@ -88,8 +90,8 @@ impl AsRef<StrPath> for StrPath {
   }
 }
 
-impl AsRef<path::Path> for StrPath {
-  fn as_ref(&self) -> &path::Path {
+impl AsRef<Path> for StrPath {
+  fn as_ref(&self) -> &Path {
     self.as_path()
   }
 }
@@ -115,26 +117,26 @@ impl ToOwned for StrPath {
 }
 
 #[derive(Clone, Debug)]
-pub struct StrPathBuf(path::PathBuf);
+pub struct StrPathBuf(PathBuf);
 
 impl StrPathBuf {
   pub fn new() -> Self {
-    Self(path::PathBuf::new())
+    Self(PathBuf::new())
   }
 
-  pub fn from_path_buf(path_buf: path::PathBuf) -> Result<Self, path::PathBuf> {
+  pub fn from_path_buf(path_buf: PathBuf) -> Result<Self, PathBuf> {
     match path_buf.to_str() {
       Some(_) => Ok(Self(path_buf)),
       None => Err(path_buf),
     }
   }
 
-  pub unsafe fn from_path_buf_unchecked(path_buf: path::PathBuf) -> Self {
+  pub unsafe fn from_path_buf_unchecked(path_buf: PathBuf) -> Self {
     Self(path_buf)
   }
 
-  pub unsafe fn from_path_unchecked<P: AsRef<path::Path> + ?Sized>(path: &P) -> Self {
-    Self(path::PathBuf::from(path.as_ref()))
+  pub unsafe fn from_path_unchecked<P: AsRef<Path> + ?Sized>(path: &P) -> Self {
+    Self(PathBuf::from(path.as_ref()))
   }
 
   pub fn from_str<S: AsRef<str> + ?Sized>(s: &S) -> Self {
@@ -142,18 +144,18 @@ impl StrPathBuf {
   }
 
   pub fn from_os_str<S: AsRef<ffi::OsStr> + ?Sized>(os_str: &S) -> Result<Self, Error> {
-    path::Path::new(os_str).try_into()
+    Path::new(os_str).try_into()
   }
 
   pub unsafe fn from_os_str_unchecked<S: AsRef<ffi::OsStr> + ?Sized>(os_str: &S) -> Self {
-    Self::from_path_unchecked(&path::Path::new(os_str))
+    Self::from_path_unchecked(&Path::new(os_str))
   }
 
   pub fn as_str_path(&self) -> &StrPath {
-    unsafe { &*(self.0.as_path() as *const path::Path as *const StrPath) }
+    unsafe { &*(self.0.as_path() as *const Path as *const StrPath) }
   }
 
-  pub fn into_path_buf(self) -> path::PathBuf {
+  pub fn into_path_buf(self) -> PathBuf {
     self.0
   }
 
@@ -164,7 +166,7 @@ impl StrPathBuf {
 
 impl From<String> for StrPathBuf {
   fn from(string: String) -> Self {
-    Self(path::PathBuf::from(string))
+    Self(PathBuf::from(string))
   }
 }
 
@@ -174,12 +176,12 @@ impl From<StrPathBuf> for String {
   }
 }
 
-impl TryFrom<&path::Path> for StrPathBuf {
+impl TryFrom<&Path> for StrPathBuf {
   type Error = Error;
 
-  fn try_from(value: &path::Path) -> Result<Self, Self::Error> {
+  fn try_from(value: &Path) -> Result<Self, Self::Error> {
     match value.to_str() {
-      Some(_) => Ok(Self(path::PathBuf::from(value))),
+      Some(_) => Ok(Self(PathBuf::from(value))),
       None => Err(Error(Repr::NotUtf8)),
     }
   }
@@ -187,7 +189,7 @@ impl TryFrom<&path::Path> for StrPathBuf {
 
 impl From<&StrPath> for StrPathBuf {
   fn from(value: &StrPath) -> Self {
-    unsafe { StrPathBuf::from_path_buf_unchecked(path::PathBuf::from(value)) }
+    unsafe { StrPathBuf::from_path_buf_unchecked(PathBuf::from(value)) }
   }
 }
 
@@ -296,19 +298,19 @@ pub struct FilePathBuf(StrPathBuf);
 
 impl FilePathBuf {
   pub fn new(str_path_buf: StrPathBuf) -> Result<Self, StrPathBuf> {
-    match path::Path::file_name(&str_path_buf) {
+    match Path::file_name(&str_path_buf) {
       Some(_) => Ok(Self(str_path_buf)),
       None => Err(str_path_buf),
     }
   }
 
-  pub fn from_path(path: &path::Path) -> Result<Self, Error> {
+  pub fn from_path(path: &Path) -> Result<Self, Error> {
     let str_path_buf =
       StrPathBuf::from_path_buf(path.to_path_buf()).map_err(|_| Error(Repr::NotUtf8))?;
     Self::new(str_path_buf).map_err(|_| Error(Repr::NotAFile))
   }
 
-  pub fn from_path_buf(path_buf: path::PathBuf) -> Result<Self, path::PathBuf> {
+  pub fn from_path_buf(path_buf: PathBuf) -> Result<Self, PathBuf> {
     let str_path_buf = StrPathBuf::from_path_buf(path_buf)?;
     Self::new(str_path_buf).map_err(StrPathBuf::into_path_buf)
   }
@@ -342,10 +344,10 @@ impl From<&FilePath> for FilePathBuf {
   }
 }
 
-impl TryFrom<path::PathBuf> for FilePathBuf {
-  type Error = path::PathBuf;
+impl TryFrom<PathBuf> for FilePathBuf {
+  type Error = PathBuf;
 
-  fn try_from(value: path::PathBuf) -> Result<Self, Self::Error> {
+  fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
     Self::from_path_buf(value)
   }
 }
@@ -384,7 +386,7 @@ impl str::FromStr for FilePathBuf {
   type Err = Error;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    FilePathBuf::from_path(path::Path::new(s))
+    FilePathBuf::from_path(Path::new(s))
   }
 }
 

@@ -1,13 +1,13 @@
-use crate::{kdl, manifest, paths};
-use kdl_schema_check::{CheckExt, CheckFailure};
+use crate::kdl::prelude::*;
+use crate::{kdl, manifest, path};
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Args {
-  pub manifest_path: paths::FilePathBuf,
+  pub manifest_path: path::FilePathBuf,
 }
 
 impl Args {
-  pub fn call(self) -> Result<(), CheckFailure> {
+  pub fn call(self) -> Result<(), kdl::CheckFailure> {
     kdl::Schema::parse(manifest::SCHEMA)
       .unwrap()
       .check_file_matches(self.manifest_path)?;

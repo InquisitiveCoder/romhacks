@@ -1,10 +1,12 @@
-use crate::{fs, paths};
-use std::{fmt, io};
+use crate::io::prelude::*;
+use crate::{fs, io, path};
+pub use digest::Digest;
+use std::fmt;
 
-pub fn try_hash(file: &paths::FilePath) -> Result<Digests, fs::Error> {
+pub fn try_hash(file: &path::FilePath) -> Result<Digests, fs::Error> {
   fs::File::open(&file)
-    .and_then(|mut file| Digests::try_from(&mut file))
-    .map_err(|err| fs::Error::ReadError(err, file.into()))
+    .and_then(|mut file| Digests::for_bytes(&mut file))
+    .map_err(|err| fs::Error::File(err, file.into()))
 }
 
 #[derive(Clone, Debug)]
@@ -23,14 +25,9 @@ impl Digests {
   }
 }
 
-impl TryFrom<&mut fs::File> for Digests {
-  type Error = io::Error;
-
-  fn try_from(file: &mut fs::File) -> Result<Self, Self::Error> {
-    use digest::Digest;
-    use io::Read;
-
-    let mut buf = [0u8; 65536];
+impl Digests {
+  pub fn for_bytes<R: Read>(file: &mut R) -> io::Result<Self> {
+    let mut buf = [0u8; 8 * 1024];
     let mut sha1 = sha1::Sha1::new();
     let mut sha256 = sha2::Sha256::new();
     loop {

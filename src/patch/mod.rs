@@ -1,15 +1,17 @@
-use crate::{fs, paths};
-use std::{error, ffi, fmt};
-use thiserror::Error;
+use crate::error::prelude::*;
+use crate::{error, fs, io, path};
+use std::{ffi, fmt};
+
+pub mod ppf;
 
 #[derive(Clone, Debug)]
 pub struct Patch {
   pub kind: Kind,
-  pub path: paths::FilePathBuf,
+  pub path: path::FilePathBuf,
 }
 
 impl Patch {
-  pub fn new(kind: Kind, path: paths::FilePathBuf) -> Self {
+  pub fn new(kind: Kind, path: path::FilePathBuf) -> Self {
     Self { kind, path }
   }
 }
@@ -19,13 +21,14 @@ pub enum Kind {
   IPS,
   UPS,
   BPS,
+  PPF,
 }
 
 impl std::str::FromStr for Patch {
   type Err = UnknownPatchKindError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    let path = paths::FilePathBuf::from_str(s)?;
+    let path = path::FilePathBuf::from_str(s)?;
     let ext = path
       .extension()
       .and_then(ffi::OsStr::to_str)
@@ -35,6 +38,7 @@ impl std::str::FromStr for Patch {
       "ips" => Ok(Patch::new(Kind::IPS, path)),
       "ups" => Ok(Patch::new(Kind::UPS, path)),
       "bps" => Ok(Patch::new(Kind::BPS, path)),
+      "ppf" => Ok(Patch::new(Kind::PPF, path)),
       _ => Err(UnknownPatchKindError(())),
     }
   }
@@ -46,6 +50,7 @@ impl fmt::Display for Kind {
       Kind::IPS => write!(f, "IPS"),
       Kind::UPS => write!(f, "UPS"),
       Kind::BPS => write!(f, "BPS"),
+      Kind::PPF => write!(f, "PPF"),
     }
   }
 }
@@ -61,36 +66,46 @@ impl fmt::Display for UnknownPatchKindError {
 
 impl error::Error for UnknownPatchKindError {}
 
-impl From<paths::Error> for UnknownPatchKindError {
-  fn from(_value: paths::Error) -> Self {
+impl From<path::Error> for UnknownPatchKindError {
+  fn from(_value: path::Error) -> Self {
     UnknownPatchKindError(())
   }
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum Tool {
-  PatchCopy(fn(&paths::FilePath, &Patch, &paths::FilePath) -> Result<(), Error>),
-  PatchInPlace(fn(&paths::FilePath, &Patch) -> Result<(), Error>),
-}
+pub struct Patcher(PatchFn);
 
-impl Tool {
+impl Patcher {
   pub const FLIPS: Self = flips::TOOL;
   pub fn from_patch_kind(patch_kind: Kind) -> Self {
     match patch_kind {
-      Kind::IPS => Tool::FLIPS,
-      Kind::UPS => Tool::FLIPS,
-      Kind::BPS => Tool::FLIPS,
+      Kind::IPS => Patcher::FLIPS,
+      Kind::UPS => Patcher::FLIPS,
+      Kind::BPS => Patcher::FLIPS,
+      Kind::PPF => Patcher(Patcher::ppf),
     }
   }
+
+  pub fn patch(&self, file: impl AsRef<path::FilePath>, patch: &Patch) -> Result<(), Error> {
+    (self.0)(file.as_ref(), patch)
+  }
+
+  fn ppf(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
+    let mut rom = fs::OpenOptions::new().read(true).write(true).open(&file)?;
+    let mut ppf = io::BufReader::new(fs::File::open(&patch.path)?);
+    ppf::patch(&mut rom, &mut ppf).map_err(|err| err.into())
+  }
 }
+
+type PatchFn = fn(&path::FilePath, &Patch) -> Result<(), Error>;
 
 mod flips {
   use super::*;
   use ::flips;
 
-  pub const TOOL: Tool = Tool::PatchInPlace(command);
+  pub const TOOL: Patcher = Patcher(command);
 
-  fn command(file: &paths::FilePath, patch: &Patch) -> Result<(), Error> {
+  fn command(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
     let patch_kind = patch.kind;
     let rom = fs::read(file)?;
     let patch = fs::read(&patch.path)?;
@@ -107,6 +122,7 @@ mod flips {
         let output = flips::BpsPatch::new(patch).apply(rom)?;
         fs::write(file, output)?;
       }
+      _ => unreachable!(),
     }
     Ok(())
   }
@@ -116,7 +132,11 @@ mod flips {
 #[derive(Debug, Error)]
 pub enum Error {
   #[error(transparent)]
-  IOError(#[from] fs::Error),
+  IOError(#[from] io::Error),
+  #[error(transparent)]
+  FileError(#[from] fs::Error),
   #[error(transparent)]
   FlipsError(#[from] ::flips::Error),
+  #[error(transparent)]
+  PPFError(#[from] ppf::Error),
 }
