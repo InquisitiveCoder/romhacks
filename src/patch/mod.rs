@@ -22,6 +22,7 @@ pub enum Kind {
   UPS,
   BPS,
   PPF,
+  XDELTA,
 }
 
 impl std::str::FromStr for Patch {
@@ -39,6 +40,7 @@ impl std::str::FromStr for Patch {
       "ups" => Ok(Patch::new(Kind::UPS, path)),
       "bps" => Ok(Patch::new(Kind::BPS, path)),
       "ppf" => Ok(Patch::new(Kind::PPF, path)),
+      "xdelta" => Ok(Patch::new(Kind::XDELTA, path)),
       _ => Err(UnknownPatchKindError(())),
     }
   }
@@ -51,6 +53,7 @@ impl fmt::Display for Kind {
       Kind::UPS => write!(f, "UPS"),
       Kind::BPS => write!(f, "BPS"),
       Kind::PPF => write!(f, "PPF"),
+      Kind::XDELTA => write!(f, "VCDIFF (a.k.a. xdelta)"),
     }
   }
 }
@@ -83,6 +86,7 @@ impl Patcher {
       Kind::UPS => Patcher::FLIPS,
       Kind::BPS => Patcher::FLIPS,
       Kind::PPF => Patcher(Patcher::ppf),
+      Kind::XDELTA => Patcher(Patcher::xdelta3),
     }
   }
 
@@ -94,6 +98,13 @@ impl Patcher {
     let mut rom = fs::OpenOptions::new().read(true).write(true).open(&file)?;
     let mut ppf = io::BufReader::new(fs::File::open(&patch.path)?);
     ppf::patch(&mut rom, &mut ppf).map_err(|err| err.into())
+  }
+
+  fn xdelta3(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
+    let rom = fs::read(file)?;
+    let patch = fs::read(&patch.path)?;
+    let patched = xdelta3::decode(&patch, &rom).ok_or(Error::XDelta3)?;
+    Ok(fs::write(file, &patched)?)
   }
 }
 
@@ -132,11 +143,13 @@ mod flips {
 #[derive(Debug, Error)]
 pub enum Error {
   #[error(transparent)]
-  IOError(#[from] io::Error),
+  IO(#[from] io::Error),
   #[error(transparent)]
-  FileError(#[from] fs::Error),
+  File(#[from] fs::Error),
   #[error(transparent)]
-  FlipsError(#[from] ::flips::Error),
+  Flips(#[from] ::flips::Error),
   #[error(transparent)]
-  PPFError(#[from] ppf::Error),
+  PPF(#[from] ppf::Error),
+  #[error("Failed to apply XDelta 3 patch.")]
+  XDelta3,
 }
