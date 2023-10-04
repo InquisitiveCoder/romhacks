@@ -2,6 +2,7 @@ use crate::error::prelude::*;
 use crate::{error, fs, io, path};
 use std::{ffi, fmt};
 
+pub mod ips;
 pub mod ppf;
 
 #[derive(Clone, Debug)]
@@ -82,7 +83,7 @@ impl Patcher {
   pub const FLIPS: Self = flips::TOOL;
   pub fn from_patch_kind(patch_kind: Kind) -> Self {
     match patch_kind {
-      Kind::IPS => Patcher::FLIPS,
+      Kind::IPS => Patcher(Patcher::ips),
       Kind::UPS => Patcher::FLIPS,
       Kind::BPS => Patcher::FLIPS,
       Kind::PPF => Patcher(Patcher::ppf),
@@ -92,6 +93,13 @@ impl Patcher {
 
   pub fn patch(&self, file: impl AsRef<path::FilePath>, patch: &Patch) -> Result<(), Error> {
     (self.0)(file.as_ref(), patch)
+  }
+
+  pub fn ips(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
+    let mut rom = fs::OpenOptions::new().write(true).open(&file)?;
+    let mut ips = io::BufReader::new(fs::File::open(&patch.path)?);
+    ips::patch(&mut rom, &mut ips)?;
+    Ok(())
   }
 
   fn ppf(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
@@ -148,6 +156,8 @@ pub enum Error {
   File(#[from] fs::Error),
   #[error(transparent)]
   Flips(#[from] ::flips::Error),
+  #[error(transparent)]
+  IPS(#[from] ips::Error),
   #[error(transparent)]
   PPF(#[from] ppf::Error),
   #[error("Failed to apply XDelta 3 patch.")]

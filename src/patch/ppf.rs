@@ -230,42 +230,42 @@ impl Format {
     ppf: &mut io::BufReader<impl Read + Seek>,
     rom: &mut (impl Read + Write + Seek),
   ) -> Result<(), Error> {
-    let Format {
-      patch_range,
-      rom_offset_type: offset_type,
-      has_undo_data,
-    } = self;
-    if patch_range.is_empty() {
-      Err(Error::NoPatchData)?;
-    }
-    let offset_len: usize = offset_type.size();
+    let Format { patch_range, rom_offset_type, has_undo_data } = self;
+    let mut ppf = ppf.take(patch_range.end - patch_range.start);
     let mut rom = io::BufWriter::new(rom);
-    let mut buf = [0u8; u8::MAX as usize];
-    let mut pos = patch_range.start;
-    while pos < patch_range.end {
+    let mut rom_offset: u64 = 0;
+
+    loop {
       let offset = u64::from_le_bytes(mem::try_init([0u8; mem::size_of::<u64>()], |buf| {
-        ppf.read_exact(&mut buf[..offset_len])
+        ppf.read_exact(&mut buf[..rom_offset_type.size()])
       })?);
 
-      let patch_length: u64 = match num::NonZeroU8::new(ppf.read_u8()?) {
+      let hunk_length: u64 = match num::NonZeroU8::new(ppf.read_u8()?) {
         Some(x) => x.get() as u64,
-        None => Err(Error::ZeroLengthPatch)?,
+        None => Err(Error::EmptyHunk)?,
       };
-
-      ppf.read_exact(&mut buf[..patch_length as usize])?;
-      if has_undo_data {
-        ppf.seek_relative(patch_length as i64)?;
-      }
 
       // Seeking will flush the buffer so we don't want to do it if we're
       // already at the correct position. This can happen if the patch needs to
       // modify more than 255 bytes in a row.
-      if offset != pos {
+      if rom_offset != offset {
         rom.seek(io::SeekFrom::Start(offset.into()))?;
+        rom_offset = offset;
       }
-      rom.write_all(&buf[..patch_length as usize])?;
-      pos += offset_len as u64 + 1 + patch_length + (has_undo_data as u64 * patch_length);
+
+      io::copy(&mut ((&mut ppf).take(hunk_length)), &mut rom)?;
+      rom_offset += hunk_length;
+
+      if has_undo_data {
+        // The Take adapter doesn't implement Seek, so discard the bytes into Sink.
+        io::copy(&mut (&mut ppf).take(hunk_length), &mut io::sink())?;
+      }
+
+      if ppf.limit() == 0 {
+        break;
+      }
     }
+
     rom.flush()?;
     Ok(())
   }
@@ -411,10 +411,8 @@ pub enum Error {
   FooterLength,
   #[error("The ROM failed block check validation. This PPF file is not intended for this ROM.")]
   BlockCheckFailed,
-  #[error("The PPF file had no patch data. The file may be corrupt.")]
-  NoPatchData,
-  #[error("Encountered a patch with a length of 0 bytes. The PPF file may be corrupt.")]
-  ZeroLengthPatch,
+  #[error("Encountered a hunk with a length of 0 bytes. The PPF file may be corrupt.")]
+  EmptyHunk,
   #[error(transparent)]
   IO(#[from] io::Error),
 }
