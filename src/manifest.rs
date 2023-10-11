@@ -15,6 +15,7 @@ const HACK: &str = "hack";
 
 // props
 const URL: &str = "url";
+const CRC_32: &str = "crc32";
 const SHA_1: &str = "sha1";
 const SHA_256: &str = "sha256";
 const VERSION: &str = "version";
@@ -29,7 +30,7 @@ pub fn get_or_create(
     Ok(str) => str,
     Err(err) => {
       if err.kind() != io::ErrorKind::NotFound {
-        Err(fs::Error::File(err, manifest_path.into()))?;
+        Err(fs::Error::file(err, manifest_path))?;
       }
       log::info!("Didn't find manifest file \"{manifest_path}\". Creating a new manifest.");
       return Ok(create());
@@ -114,6 +115,7 @@ pub fn update(
   kdl::NodeId::new(FILE, (0, rom.file_name()))
     .get_or_insert(file_nodes, |node| {
       const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", FILE.len() + 1));
+      node.insert(CRC_32, line_wrap(file_digests.crc32(), INDENT));
       node.insert(SHA_1, line_wrap(file_digests.sha1(), INDENT));
       node.insert(SHA_256, line_wrap(file_digests.sha256(), INDENT));
     })
@@ -122,6 +124,7 @@ pub fn update(
     .push(mem::init(kdl::KdlNode::new(PATCH), |node| {
       const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 4 + PATCH.len() + 1));
       node.insert(0, patch.path.file_name());
+      node.insert(CRC_32, line_wrap(patch_digests.crc32(), INDENT));
       node.insert(SHA_1, line_wrap(patch_digests.sha1(), INDENT));
       node.insert(SHA_256, line_wrap(patch_digests.sha256(), INDENT));
       let children = node.ensure_children().nodes_mut();
@@ -132,7 +135,8 @@ pub fn update(
       }));
       children.push(mem::init(kdl::KdlNode::new(RESULT), |node| {
         const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + RESULT.len() + 1));
-        node.insert(SHA_1, patched_digests.sha1());
+        node.insert(CRC_32, patched_digests.crc32());
+        node.insert(SHA_1, line_wrap(patched_digests.sha1(), INDENT));
         node.insert(SHA_256, line_wrap(patched_digests.sha256(), INDENT));
       }));
     }));

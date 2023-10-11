@@ -19,20 +19,23 @@ document {
             max 1
             pattern r#"[^\/:*?"<>|`]+"#
         }
+        prop "crc32" id="crc32-prop" {
+            required
+            pattern "[0-9a-f]{8}"
+        }
         prop "sha1" id="sha1-prop" {
             required
-            pattern "[0-9A-F]{40}"
+            pattern "[0-9a-f]{40}"
         }
         prop "sha256" id="sha256-prop" {
             required
-            pattern "[0-9A-F]{64}"
+            pattern "[0-9a-f]{64}"
         }
-        prop ref=r#"[id="sha1-prop"]"#
-        prop ref=r#"[id="sha256-prop"]"#
         children {
             node "patch" {
                 min 1
                 value ref=r#"[id="filename-value"]"#
+                prop ref=r#"[id="crc32-prop"]"#
                 prop ref=r#"[id="sha1-prop"]"#
                 prop ref=r#"[id="sha256-prop"]"#
                 children {
@@ -51,6 +54,7 @@ document {
                     node "result" {
                         min 1
                         max 1
+                        prop ref=r#"[id="crc32-prop"]"#
                         prop ref=r#"[id="sha1-prop"]"#
                         prop ref=r#"[id="sha256-prop"]"#
                     }

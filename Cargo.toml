@@ -7,11 +7,13 @@ description = "Easy ROM hack patching and auditing."
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.75"
 bytemuck = "1.14.0"
 byteorder = "1.4.3"
 clap = { version = "4.3.21", features = ["derive"] }
+const-hex = "1.9.1"
 const_format = "0.2.31"
-digest = "0.10.7"
+crc32fast = "1.3.2"
 flips = "0.2.1"
 kdl = "4.6.0"
 kdl-schema = "0.1.0"
