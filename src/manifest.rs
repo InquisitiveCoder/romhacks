@@ -1,7 +1,6 @@
 use crate::error::prelude::*;
 use crate::kdl::prelude::*;
-use crate::{fs, hack, io, kdl, mem, patch, path, sha};
-use const_format::{concatcp, str_repeat};
+use crate::{crc, fs, hack, io, kdl, mem, patch, path};
 use std::str::FromStr;
 
 pub const SCHEMA: &str = include_str!("romhacks.schema.kdl");
@@ -16,15 +15,13 @@ const HACK: &str = "hack";
 // props
 const URL: &str = "url";
 const CRC_32: &str = "crc32";
-const SHA_1: &str = "sha1";
-const SHA_256: &str = "sha256";
 const VERSION: &str = "version";
 
 pub fn get_or_create(
   manifest_path: &path::FilePath,
   rom_path: &path::FilePathBuf,
-  file_digests: &sha::Digests,
-  patch_digests: &sha::Digests,
+  rom_digest: crc::Crc32,
+  patch_digest: crc::Crc32,
 ) -> Result<kdl::KdlDocument, Error> {
   let str = match fs::read_to_string(&manifest_path) {
     Ok(str) => str,
@@ -44,7 +41,7 @@ pub fn get_or_create(
   let manifest = mem::init(kdl::KdlDocument::from_str(&str).unwrap(), |doc| {
     doc.nodes_mut().sort_by(|a, b| {
       fn ord(node: &kdl::KdlNode) -> i32 {
-        (if node.name().value() == ROMHACKS_MANIFEST { 0 } else { 1 })
+        (node.name().value() != ROMHACKS_MANIFEST) as i32
       }
       ord(a).cmp(&ord(b))
     })
@@ -58,11 +55,7 @@ pub fn get_or_create(
     None => return Ok(manifest),
   };
 
-  validate_file(
-    existing_file_node,
-    file_digests.sha256(),
-    patch_digests.sha256(),
-  )?;
+  validate_file(existing_file_node, rom_digest, patch_digest)?;
 
   Ok(manifest)
 }
@@ -78,22 +71,23 @@ fn create() -> kdl::KdlDocument {
 
 fn validate_file(
   file_node: &kdl::KdlNode,
-  file_sha256: &str,
-  patch_sha256: &str,
+  file_crc32: crc::Crc32,
+  patch_crc32: crc::Crc32,
 ) -> Result<(), Error> {
   let patches: &[kdl::KdlNode] = kdl::unwrap_children(file_node);
-  let patch_id = kdl::NodeId::new(PATCH, (SHA_256, patch_sha256));
+  let patch_id = kdl::NodeId::new(PATCH, (CRC_32, patch_crc32));
   if patches.iter().find(|patch| patch_id == **patch).is_some() {
     Err(Error::AlreadyPatched)?;
   }
   let last_patch: &kdl::KdlNode = patches.last().unwrap();
-  let last_result_sha256 = kdl::unwrap_children(last_patch)
+  let last_result_crc32 = kdl::unwrap_children(last_patch)
     .iter()
     .find(|node| node.name().value() == RESULT)
-    .and_then(|node| node.get(SHA_256))
-    .and_then(|entry| entry.value().as_string())
+    .and_then(|node| node.get(CRC_32))
+    .and_then(|entry| entry.value().as_i64().map(|x| x as u32))
+    .map(crc::Crc32::new)
     .unwrap();
-  if file_sha256 != last_result_sha256 {
+  if file_crc32 != last_result_crc32 {
     Err(Error::ManifestOutdated)?;
   }
   Ok(())
@@ -104,40 +98,27 @@ pub fn update(
   rom: path::FilePathBuf,
   patch: patch::Patch,
   hack: hack::RomHack,
-  file_digests: sha::Digests,
-  patch_digests: sha::Digests,
-  patched_digests: sha::Digests,
+  file_digest: crc::Crc32,
+  patch_digest: crc::Crc32,
+  patched_digest: crc::Crc32,
 ) {
-  fn line_wrap(v: impl Into<kdl::KdlEntry>, leading: &str) -> kdl::KdlEntry {
-    mem::init(v.into(), |e| e.set_leading(leading))
-  }
   let file_nodes = doc.nodes_mut();
   kdl::NodeId::new(FILE, (0, rom.file_name()))
     .get_or_insert(file_nodes, |node| {
-      const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", FILE.len() + 1));
-      node.insert(CRC_32, line_wrap(file_digests.crc32(), INDENT));
-      node.insert(SHA_1, line_wrap(file_digests.sha1(), INDENT));
-      node.insert(SHA_256, line_wrap(file_digests.sha256(), INDENT));
+      node.insert(CRC_32, file_digest);
     })
     .ensure_children()
     .nodes_mut()
     .push(mem::init(kdl::KdlNode::new(PATCH), |node| {
-      const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 4 + PATCH.len() + 1));
       node.insert(0, patch.path.file_name());
-      node.insert(CRC_32, line_wrap(patch_digests.crc32(), INDENT));
-      node.insert(SHA_1, line_wrap(patch_digests.sha1(), INDENT));
-      node.insert(SHA_256, line_wrap(patch_digests.sha256(), INDENT));
+      node.insert(CRC_32, patch_digest);
       let children = node.ensure_children().nodes_mut();
       children.push(mem::init(kdl::KdlNode::new(HACK), |node| {
-        const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + HACK.len() + 1));
         node.insert(URL, hack.url.as_str());
-        node.insert(VERSION, line_wrap(hack.version.as_str(), INDENT));
+        node.insert(VERSION, hack.version.as_str());
       }));
       children.push(mem::init(kdl::KdlNode::new(RESULT), |node| {
-        const INDENT: &str = concatcp!(" \\\n", str_repeat!(" ", 8 + RESULT.len() + 1));
-        node.insert(CRC_32, patched_digests.crc32());
-        node.insert(SHA_1, line_wrap(patched_digests.sha1(), INDENT));
-        node.insert(SHA_256, line_wrap(patched_digests.sha256(), INDENT));
+        node.insert(CRC_32, patched_digest);
       }));
     }));
 }

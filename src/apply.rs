@@ -1,5 +1,5 @@
 use crate::error::prelude::*;
-use crate::{filename, fs, hack, manifest, patch, path, sha};
+use crate::{crc, filename, fs, hack, manifest, patch, path};
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Args {
@@ -21,11 +21,10 @@ impl Args {
       path.push_str(".romhacks.kdl").unwrap()
     };
 
-    let file_digests = sha::try_hash(&self.rom)?;
-    let patch_digests = sha::try_hash(&self.patch.path)?;
+    let rom_digest = crc::try_hash(&self.rom)?;
+    let patch_digest = crc::try_hash(&self.patch.path)?;
 
-    let mut doc =
-      manifest::get_or_create(&manifest_path, &self.rom, &file_digests, &patch_digests)?;
+    let mut doc = manifest::get_or_create(&manifest_path, &self.rom, rom_digest, patch_digest)?;
 
     let backup_file = self.rom.clone().push_str(".bak").unwrap();
     if !self.no_backup && !backup_file.exists() {
@@ -38,14 +37,14 @@ impl Args {
 
     log::info!("ROM patched successfully.");
 
-    let patched_digests = sha::try_hash(&self.rom)?;
+    let patched_digests = crc::try_hash(&self.rom)?;
     manifest::update(
       &mut doc,
       self.rom,
       self.patch,
       self.hack,
-      file_digests,
-      patch_digests,
+      rom_digest,
+      patch_digest,
       patched_digests,
     );
     fs::write(&manifest_path, doc.to_string())?;

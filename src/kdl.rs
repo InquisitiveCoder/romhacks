@@ -1,4 +1,4 @@
-use crate::mem;
+use crate::{crc, mem};
 pub use kdl::*;
 pub use kdl_schema::Schema;
 pub use kdl_schema_check::{CheckExt, CheckFailure};
@@ -23,11 +23,11 @@ impl<N, K, V> NodeId<N, K, V>
 where
   N: Into<KdlIdentifier> + for<'a> PartialEq<&'a str>,
   K: Into<NodeKey> + Copy,
-  V: Into<KdlValue> + for<'a> PartialEq<&'a KdlValue>,
+  V: Into<KdlValue> + PartialEq<KdlValue>,
 {
   pub fn new<R>(name: N, entry: (K, R)) -> Self
   where
-    R: ValueRepr<Eq = V>,
+    R: ValueRepr<Repr = V>,
   {
     Self { name, entry: (entry.0, entry.1.into()) }
   }
@@ -53,13 +53,13 @@ impl<N, K, V> PartialEq<KdlNode> for NodeId<N, K, V>
 where
   N: Into<KdlIdentifier> + for<'a> PartialEq<&'a str>,
   K: Into<NodeKey> + Copy,
-  V: Into<KdlValue> + for<'a> PartialEq<&'a KdlValue>,
+  V: Into<KdlValue> + PartialEq<KdlValue>,
 {
   fn eq(&self, node: &KdlNode) -> bool {
     self.name == node.name().value()
       && node
         .get(self.entry.0)
-        .is_some_and(|entry| self.entry.1 == entry.value())
+        .is_some_and(|entry| self.entry.1 == *entry.value())
   }
 }
 
@@ -77,13 +77,29 @@ where
 }
 
 /// Types that can be converted into a `KdlValue` and have a newtype that
-/// implements `PartialEq<&KdlValue>`.
-pub trait ValueRepr: Sized + Into<Self::Eq> {
-  type Eq: Into<KdlValue> + for<'a> PartialEq<&'a KdlValue>;
+/// implements `PartialEq<KdlValue>`.
+pub trait ValueRepr: Sized + Into<Self::Repr> {
+  type Repr: Into<KdlValue> + PartialEq<KdlValue>;
 }
 
 impl<'a> ValueRepr for &'a str {
-  type Eq = &'a Str;
+  type Repr = &'a Str;
+}
+
+impl ValueRepr for crc::Crc32 {
+  type Repr = Self;
+}
+
+impl From<crc::Crc32> for KdlValue {
+  fn from(crc32: crc::Crc32) -> Self {
+    KdlValue::Base16(crc32.value().into())
+  }
+}
+
+impl PartialEq<KdlValue> for crc::Crc32 {
+  fn eq(&self, other: &KdlValue) -> bool {
+    Some(self.value() as i64) == other.as_i64()
+  }
 }
 
 /// Newtype for `str` that supports `PartialEq<&KdlValue>`
@@ -93,6 +109,7 @@ pub struct Str(str);
 
 impl Str {
   pub fn new(str: &str) -> &Self {
+    // Str is just a newtype for str, so this is always safe.
     unsafe { &*(str as *const str as *const Self) }
   }
 }
@@ -123,8 +140,8 @@ impl AsRef<str> for &Str {
   }
 }
 
-impl PartialEq<&KdlValue> for &Str {
-  fn eq(&self, other: &&KdlValue) -> bool {
+impl PartialEq<KdlValue> for &Str {
+  fn eq(&self, other: &KdlValue) -> bool {
     Some(&self.0) == other.as_string()
   }
 }

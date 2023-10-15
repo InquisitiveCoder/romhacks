@@ -4,6 +4,7 @@ use std::process;
 mod apply;
 mod cli;
 mod convert;
+mod crc;
 mod error;
 mod filename;
 mod fs;
@@ -15,7 +16,6 @@ mod manifest;
 mod mem;
 mod patch;
 mod path;
-mod sha;
 mod validate;
 
 fn main() -> miette::Result<()> {
