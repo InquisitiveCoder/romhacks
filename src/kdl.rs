@@ -1,7 +1,7 @@
 use crate::{crc, mem};
 pub use kdl::*;
 pub use kdl_schema::Schema;
-pub use kdl_schema_check::{CheckExt, CheckFailure};
+pub use kdl_schema_check::CheckFailure;
 use polonius_the_crab::*;
 
 pub mod prelude {

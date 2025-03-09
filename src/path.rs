@@ -1,411 +1,163 @@
+use std::ffi::OsStr;
 use std::ops::Deref;
-use std::{ffi, fmt, str};
+use std::{fmt, marker, str};
+use thiserror::Error;
 
 pub use std::path::*;
+use std::str::FromStr;
+pub use typed_path::{Utf8Encoding, Utf8NativeEncoding, Utf8Path, Utf8PathBuf};
 
-#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
-pub struct StrPath(Path);
+pub type Utf8FilePath<E> = FilePath<Box<Utf8Path<E>>, E>;
+pub type Utf8NativeFilePath = Utf8FilePath<Utf8NativeEncoding>;
 
-impl StrPath {
-  pub fn new<S: AsRef<str> + ?Sized>(s: &S) -> &Self {
-    unsafe { Self::from_path_unchecked(Path::new(s.as_ref())) }
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
+pub struct FilePath<P, E>(P, marker::PhantomData<E>);
+
+impl<P, E> FilePath<P, E>
+where
+  P: AsRef<Utf8Path<E>>,
+  E: for<'enc> Utf8Encoding<'enc>,
+{
+  pub fn try_new(utf8_path: P) -> Result<Self, FilePathError> {
+    match utf8_path.as_ref().file_name() {
+      Some(_) => Ok(Self(utf8_path, marker::PhantomData)),
+      None => Err(FilePathError(())),
+    }
   }
 
-  pub fn from_os_str<S: AsRef<ffi::OsStr> + ?Sized>(s: &S) -> Result<&Self, Error> {
-    Path::new(s).try_into()
+  pub unsafe fn new_unchecked(path: P) -> Self {
+    Self(path, marker::PhantomData)
   }
 
-  pub unsafe fn from_path_unchecked<P: AsRef<Path> + ?Sized>(path: &P) -> &Self {
-    unsafe { &*(path.as_ref() as *const Path as *const Self) }
+  pub fn file_name(&self) -> &str {
+    unsafe { self.0.as_ref().file_name().unwrap_unchecked() }
   }
 
-  pub fn as_path(&self) -> &Path {
-    &self.0
+  pub fn file_stem(&self) -> &str {
+    unsafe { self.0.as_ref().file_stem().unwrap_unchecked() }
   }
 
   pub fn as_str(&self) -> &str {
-    unsafe { self.0.to_str().unwrap_unchecked() }
+    self.0.as_ref().as_str()
   }
 
-  pub fn file_name(&self) -> Option<&str> {
-    (self.0)
-      .file_name()
-      .map(|os_str| unsafe { os_str.to_str().unwrap_unchecked() })
-  }
-
-  pub fn file_stem(&self) -> Option<&str> {
-    (self.0)
-      .file_stem()
-      .map(|os_str| unsafe { os_str.to_str().unwrap_unchecked() })
-  }
-
-  pub fn parent(&self) -> Option<&StrPath> {
-    (self.0)
-      .parent()
-      .map(|path| unsafe { StrPath::from_path_unchecked(path) })
+  pub fn as_path(&self) -> &Path {
+    Path::new(self.as_str())
   }
 }
 
-impl<'a> From<&'a str> for &'a StrPath {
-  fn from(value: &'a str) -> Self {
-    StrPath::new(value)
+impl<E> TryFrom<Box<Utf8Path<E>>> for Utf8FilePath<E>
+where
+  E: for<'enc> Utf8Encoding<'enc>,
+{
+  type Error = FilePathError;
+
+  fn try_from(utf8_path: Box<Utf8Path<E>>) -> Result<Self, Self::Error> {
+    Self::try_new(utf8_path)
   }
 }
 
-impl<'a> TryFrom<&'a ffi::OsStr> for &'a StrPath {
-  type Error = Error;
+impl<E> TryFrom<Utf8PathBuf<E>> for FilePath<Utf8PathBuf<E>, E>
+where
+  E: for<'enc> Utf8Encoding<'enc>,
+{
+  type Error = FilePathError;
 
-  fn try_from(value: &'a ffi::OsStr) -> Result<Self, Self::Error> {
-    Path::new(value).try_into()
+  fn try_from(utf8_path: Utf8PathBuf<E>) -> Result<Self, Self::Error> {
+    Self::try_new(utf8_path)
   }
 }
 
-impl<'a> TryFrom<&'a Path> for &'a StrPath {
-  type Error = Error;
-  fn try_from(value: &'a Path) -> Result<Self, Self::Error> {
-    match value.to_str() {
-      Some(_) => Ok(unsafe { StrPath::from_path_unchecked(value) }),
-      None => Err(Error(Repr::NotUtf8)),
-    }
-  }
-}
-
-impl Deref for StrPath {
-  type Target = Path;
+impl<P, E> Deref for FilePath<P, E> {
+  type Target = P;
 
   fn deref(&self) -> &Self::Target {
-    self.as_path()
+    &self.0
   }
 }
 
-impl fmt::Display for StrPath {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}", self.as_str())
+impl<P, E> AsRef<P> for FilePath<P, E>
+where
+  <FilePath<P, E> as Deref>::Target: AsRef<P>,
+{
+  fn as_ref(&self) -> &P {
+    self.deref().as_ref()
   }
 }
 
-impl AsRef<StrPath> for StrPath {
-  fn as_ref(&self) -> &StrPath {
-    self
-  }
-}
-
-impl AsRef<Path> for StrPath {
+impl<P, E> AsRef<Path> for FilePath<P, E>
+where
+  P: AsRef<Utf8Path<E>>,
+  E: for<'enc> Utf8Encoding<'enc>,
+{
   fn as_ref(&self) -> &Path {
     self.as_path()
   }
 }
 
-impl AsRef<str> for StrPath {
-  fn as_ref(&self) -> &str {
-    self.as_str()
-  }
-}
-
-impl AsRef<ffi::OsStr> for StrPath {
-  fn as_ref(&self) -> &ffi::OsStr {
-    self.as_os_str()
-  }
-}
-
-impl ToOwned for StrPath {
-  type Owned = StrPathBuf;
-
-  fn to_owned(&self) -> Self::Owned {
-    StrPathBuf::from(self)
-  }
-}
-
-#[derive(Clone, Debug)]
-pub struct StrPathBuf(PathBuf);
-
-impl StrPathBuf {
-  pub fn new() -> Self {
-    Self(PathBuf::new())
-  }
-
-  pub fn from_path_buf(path_buf: PathBuf) -> Result<Self, PathBuf> {
-    match path_buf.to_str() {
-      Some(_) => Ok(Self(path_buf)),
-      None => Err(path_buf),
-    }
-  }
-
-  pub unsafe fn from_path_buf_unchecked(path_buf: PathBuf) -> Self {
-    Self(path_buf)
-  }
-
-  pub unsafe fn from_path_unchecked<P: AsRef<Path> + ?Sized>(path: &P) -> Self {
-    Self(PathBuf::from(path.as_ref()))
-  }
-
-  pub fn from_str<S: AsRef<str> + ?Sized>(s: &S) -> Self {
-    StrPath::new(s).into()
-  }
-
-  pub fn from_os_str<S: AsRef<ffi::OsStr> + ?Sized>(os_str: &S) -> Result<Self, Error> {
-    Path::new(os_str).try_into()
-  }
-
-  pub unsafe fn from_os_str_unchecked<S: AsRef<ffi::OsStr> + ?Sized>(os_str: &S) -> Self {
-    Self::from_path_unchecked(&Path::new(os_str))
-  }
-
-  pub fn as_str_path(&self) -> &StrPath {
-    unsafe { &*(self.0.as_path() as *const Path as *const StrPath) }
-  }
-
-  pub fn into_path_buf(self) -> PathBuf {
-    self.0
-  }
-
-  pub fn into_string(self) -> String {
-    unsafe { self.0.into_os_string().into_string().unwrap_unchecked() }
-  }
-}
-
-impl From<String> for StrPathBuf {
-  fn from(string: String) -> Self {
-    Self(PathBuf::from(string))
-  }
-}
-
-impl From<StrPathBuf> for String {
-  fn from(str_path_buf: StrPathBuf) -> Self {
-    str_path_buf.into_string()
-  }
-}
-
-impl TryFrom<&Path> for StrPathBuf {
-  type Error = Error;
-
-  fn try_from(value: &Path) -> Result<Self, Self::Error> {
-    match value.to_str() {
-      Some(_) => Ok(Self(PathBuf::from(value))),
-      None => Err(Error(Repr::NotUtf8)),
-    }
-  }
-}
-
-impl From<&StrPath> for StrPathBuf {
-  fn from(value: &StrPath) -> Self {
-    unsafe { StrPathBuf::from_path_buf_unchecked(PathBuf::from(value)) }
-  }
-}
-
-impl Deref for StrPathBuf {
-  type Target = StrPath;
-
-  fn deref(&self) -> &Self::Target {
-    self.as_str_path()
-  }
-}
-
-impl<T> AsRef<T> for StrPathBuf
+impl<P, E> AsRef<OsStr> for FilePath<P, E>
 where
-  T: ?Sized,
-  <StrPathBuf as Deref>::Target: AsRef<T>,
+  P: AsRef<Utf8Path<E>>,
+  E: for<'enc> Utf8Encoding<'enc>,
 {
-  fn as_ref(&self) -> &T {
-    self.deref().as_ref()
+  fn as_ref(&self) -> &OsStr {
+    OsStr::new(self.0.as_ref().as_str())
   }
 }
 
-impl std::borrow::Borrow<StrPath> for StrPathBuf {
-  fn borrow(&self) -> &StrPath {
-    self.as_ref()
-  }
-}
-
-impl fmt::Display for StrPathBuf {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}", self.as_str())
-  }
-}
-
-#[derive(Debug)]
-pub struct FilePath(StrPath);
-
-impl FilePath {
-  pub unsafe fn from_str_path_unchecked<P: AsRef<StrPath> + ?Sized>(path: &P) -> &Self {
-    unsafe { &*(path.as_ref() as *const StrPath as *const Self) }
-  }
-
-  pub unsafe fn from_str_unchecked<S: AsRef<str> + ?Sized>(s: &S) -> &Self {
-    FilePath::from_str_path_unchecked(StrPath::new(s.as_ref()))
-  }
-
-  pub fn file_name(&self) -> &str {
-    unsafe { self.0.file_name().unwrap_unchecked() }
-  }
-
-  pub fn file_stem(&self) -> &str {
-    unsafe { self.0.file_stem().unwrap_unchecked() }
-  }
-}
-
-impl<'a> TryFrom<&'a StrPath> for &'a FilePath {
-  type Error = Error;
-
-  fn try_from(value: &'a StrPath) -> Result<Self, Self::Error> {
-    match value.file_name() {
-      Some(_) => Ok(unsafe { FilePath::from_str_path_unchecked(value) }),
-      None => Err(Error(Repr::NotAFile)),
-    }
-  }
-}
-
-impl Deref for FilePath {
-  type Target = StrPath;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
-  }
-}
-
-impl<T> AsRef<T> for FilePath
-where
-  T: ?Sized,
-  <FilePath as Deref>::Target: AsRef<T>,
-{
-  fn as_ref(&self) -> &T {
-    self.deref().as_ref()
-  }
-}
-
-impl AsRef<FilePath> for FilePath {
-  fn as_ref(&self) -> &FilePath {
+impl<P, E> AsRef<Self> for FilePath<P, E> {
+  fn as_ref(&self) -> &Self {
     self
   }
 }
 
-impl fmt::Display for FilePath {
+impl<P, E> From<FilePath<P, E>> for String
+where
+  P: AsRef<Utf8Path<E>>,
+  E: for<'enc> Utf8Encoding<'enc>,
+{
+  fn from(file_path: FilePath<P, E>) -> Self {
+    file_path.0.as_ref().as_str().into()
+  }
+}
+
+impl<E> TryFrom<String> for Utf8FilePath<E>
+where
+  E: for<'enc> Utf8Encoding<'enc>,
+{
+  type Error = FilePathError;
+
+  fn try_from(string: String) -> Result<Self, Self::Error> {
+    Self::try_new(Utf8PathBuf::from(string).into_boxed_path())
+  }
+}
+
+impl From<Utf8NativeFilePath> for PathBuf {
+  fn from(file_path: Utf8NativeFilePath) -> Self {
+    PathBuf::from(file_path.as_path())
+  }
+}
+
+impl<P, E> fmt::Display for FilePath<P, E>
+where
+  P: fmt::Display,
+{
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     self.0.fmt(f)
   }
 }
 
-impl ToOwned for FilePath {
-  type Owned = FilePathBuf;
-
-  fn to_owned(&self) -> Self::Owned {
-    FilePathBuf::from(self)
-  }
-}
-
-#[derive(Clone, Debug)]
-pub struct FilePathBuf(StrPathBuf);
-
-impl FilePathBuf {
-  pub fn new(str_path_buf: StrPathBuf) -> Result<Self, StrPathBuf> {
-    match Path::file_name(&str_path_buf) {
-      Some(_) => Ok(Self(str_path_buf)),
-      None => Err(str_path_buf),
-    }
-  }
-
-  pub fn from_path(path: &Path) -> Result<Self, Error> {
-    let str_path_buf =
-      StrPathBuf::from_path_buf(path.to_path_buf()).map_err(|_| Error(Repr::NotUtf8))?;
-    Self::new(str_path_buf).map_err(|_| Error(Repr::NotAFile))
-  }
-
-  pub fn from_path_buf(path_buf: PathBuf) -> Result<Self, PathBuf> {
-    let str_path_buf = StrPathBuf::from_path_buf(path_buf)?;
-    Self::new(str_path_buf).map_err(StrPathBuf::into_path_buf)
-  }
-
-  pub fn as_file_path(&self) -> &FilePath {
-    unsafe { &*(self.0.as_str_path() as *const StrPath as *const FilePath) }
-  }
-
-  pub fn set_file_name<S: AsRef<str>>(&mut self, file_name: S) {
-    self.0 .0.set_file_name(file_name.as_ref())
-  }
-
-  pub fn set_extension<S: AsRef<str>>(&mut self, ext: S) -> bool {
-    self.0 .0.set_extension(ext.as_ref())
-  }
-
-  pub fn into_str_path_buf(self) -> StrPathBuf {
-    self.0
-  }
-
-  pub fn push_str<S: AsRef<str> + ?Sized>(self, s: &S) -> Result<Self, StrPathBuf> {
-    let mut str_path_buf = self.into_str_path_buf().into_string();
-    str_path_buf.push_str(s.as_ref());
-    return FilePathBuf::new(StrPathBuf::from(str_path_buf));
-  }
-}
-
-impl From<&FilePath> for FilePathBuf {
-  fn from(value: &FilePath) -> Self {
-    Self(unsafe { StrPathBuf::from_path_unchecked(value) })
-  }
-}
-
-impl TryFrom<PathBuf> for FilePathBuf {
-  type Error = PathBuf;
-
-  fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-    Self::from_path_buf(value)
-  }
-}
-
-impl Deref for FilePathBuf {
-  type Target = FilePath;
-
-  fn deref(&self) -> &Self::Target {
-    self.as_file_path()
-  }
-}
-
-impl fmt::Display for FilePathBuf {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    write!(f, "{}", self.0)
-  }
-}
-
-impl<T> AsRef<T> for FilePathBuf
+impl<E> FromStr for Utf8FilePath<E>
 where
-  T: ?Sized,
-  <FilePathBuf as Deref>::Target: AsRef<T>,
+  E: for<'enc> Utf8Encoding<'enc>,
 {
-  fn as_ref(&self) -> &T {
-    self.deref().as_ref()
-  }
-}
-
-impl std::borrow::Borrow<FilePath> for FilePathBuf {
-  fn borrow(&self) -> &FilePath {
-    self.as_ref()
-  }
-}
-
-impl str::FromStr for FilePathBuf {
-  type Err = Error;
+  type Err = FilePathError;
 
   fn from_str(s: &str) -> Result<Self, Self::Err> {
-    FilePathBuf::from_path(Path::new(s))
+    Self::try_new(Utf8PathBuf::from(s).into_boxed_path())
   }
 }
 
-#[derive(Debug)]
-pub struct Error(Repr);
-
-#[derive(Clone, Copy, Debug)]
-enum Repr {
-  NotUtf8,
-  NotAFile,
-}
-
-impl fmt::Display for Error {
-  fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    match self.0 {
-      Repr::NotUtf8 => write!(f, "path is not UTF-8"),
-      Repr::NotAFile => write!(f, "path does not end in a file name"),
-    }
-  }
-}
-
-impl std::error::Error for Error {}
+#[derive(Clone, Debug, Error)]
+#[error("path does not end in a file name")]
+pub struct FilePathError(());

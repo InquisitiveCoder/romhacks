@@ -1,3 +1,5 @@
+extern crate core;
+
 use crate::error::prelude::*;
 use std::process;
 
@@ -7,7 +9,6 @@ mod convert;
 mod crc;
 mod error;
 mod filename;
-mod fs;
 mod hack;
 mod io;
 mod kdl;
@@ -23,10 +24,10 @@ fn main() -> miette::Result<()> {
 
   log::init();
   let args: cli::Args = clap::Parser::try_parse().map_err(|err| Error::from(err))?;
-  return match args.command {
+  match args.command {
     Apply(args) => args.call().map_err(|err| Error::from(err).into()),
     Validate(args) => args.call().map_err(|err| Error::ValidateError(err).into()),
-  };
+  }
 }
 
 #[non_exhaustive]
@@ -52,7 +53,8 @@ impl process::Termination for Error {
         K::BadManifest => 3,
         K::AlreadyPatched => 4,
         K::ManifestOutdated => 5,
-        K::PatchingError => 6,
+        K::Patching => 6,
+        K::FileTooLarge => 7,
       },
       Error::ValidateError(_) => 2,
     })

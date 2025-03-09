@@ -1,14 +1,18 @@
 use crate::io::prelude::*;
-use crate::{fs, io, path};
+use crate::{io, path};
 use buf::ReadBuffer;
+use fs_err as fs;
 use std::sync::{Arc, Barrier, RwLock};
 
 type Buffer = buf::Buffer<{ 8 * 1024 }>;
 
-pub fn try_hash(file: &path::FilePath) -> Result<Crc32, fs::Error> {
-  fs::File::open(&file)
-    .and_then(|mut file| Crc32::read_and_hash(&mut file))
-    .map_err(|err| fs::Error::file(err, file))
+pub fn try_hash(file: &impl AsRef<path::Path>) -> io::Result<Crc32> {
+  try_hash_path(file.as_ref())
+}
+
+fn try_hash_path(file: &path::Path) -> io::Result<Crc32> {
+  let mut file = fs::File::open(file)?;
+  Crc32::read_and_hash(&mut file)
 }
 
 #[repr(transparent)]

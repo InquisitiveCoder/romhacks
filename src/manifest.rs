@@ -1,6 +1,7 @@
 use crate::error::prelude::*;
 use crate::kdl::prelude::*;
-use crate::{crc, fs, hack, io, kdl, mem, patch, path};
+use crate::{crc, hack, io, kdl, mem, path};
+use fs_err as fs;
 use std::str::FromStr;
 
 pub const SCHEMA: &str = include_str!("romhacks.schema.kdl");
@@ -18,19 +19,34 @@ const CRC_32: &str = "crc32";
 const VERSION: &str = "version";
 
 pub fn get_or_create(
-  manifest_path: &path::FilePath,
-  rom_path: &path::FilePathBuf,
+  manifest_path: &impl AsRef<path::Utf8NativeFilePath>,
+  rom_path: &impl AsRef<path::Utf8NativeFilePath>,
   rom_digest: crc::Crc32,
   patch_digest: crc::Crc32,
-) -> Result<kdl::KdlDocument, Error> {
-  let str = match fs::read_to_string(&manifest_path) {
+) -> Result<kdl::KdlDocument, GetOrCreateError> {
+  monomorphic_get_or_create(
+    manifest_path.as_ref(),
+    rom_path.as_ref(),
+    rom_digest,
+    patch_digest,
+  )
+}
+
+fn monomorphic_get_or_create(
+  manifest_path: &path::Utf8NativeFilePath,
+  rom_path: &path::Utf8NativeFilePath,
+  rom_digest: crc::Crc32,
+  patch_digest: crc::Crc32,
+) -> Result<kdl::KdlDocument, GetOrCreateError> {
+  let str = match fs::read_to_string(manifest_path.as_path()) {
     Ok(str) => str,
     Err(err) => {
-      if err.kind() != io::ErrorKind::NotFound {
-        Err(fs::Error::file(err, manifest_path))?;
+      return if err.kind() == io::ErrorKind::NotFound {
+        log::info!("Didn't find \"{manifest_path}\". Creating a new manifest.");
+        Ok(create())
+      } else {
+        Err(err.into())
       }
-      log::info!("Didn't find manifest file \"{manifest_path}\". Creating a new manifest.");
-      return Ok(create());
     }
   };
 
@@ -73,11 +89,11 @@ fn validate_file(
   file_node: &kdl::KdlNode,
   file_crc32: crc::Crc32,
   patch_crc32: crc::Crc32,
-) -> Result<(), Error> {
+) -> Result<(), GetOrCreateError> {
   let patches: &[kdl::KdlNode] = kdl::unwrap_children(file_node);
   let patch_id = kdl::NodeId::new(PATCH, (CRC_32, patch_crc32));
   if patches.iter().find(|patch| patch_id == **patch).is_some() {
-    Err(Error::AlreadyPatched)?;
+    Err(GetOrCreateError::AlreadyPatched)?;
   }
   let last_patch: &kdl::KdlNode = patches.last().unwrap();
   let last_result_crc32 = kdl::unwrap_children(last_patch)
@@ -88,15 +104,15 @@ fn validate_file(
     .map(crc::Crc32::new)
     .unwrap();
   if file_crc32 != last_result_crc32 {
-    Err(Error::ManifestOutdated)?;
+    Err(GetOrCreateError::ManifestOutdated)?;
   }
   Ok(())
 }
 
 pub fn update(
   doc: &mut kdl::KdlDocument,
-  rom: path::FilePathBuf,
-  patch: patch::Patch,
+  rom: &path::Utf8NativeFilePath,
+  patch: &path::Utf8NativeFilePath,
   hack: hack::RomHack,
   file_digest: crc::Crc32,
   patch_digest: crc::Crc32,
@@ -110,7 +126,7 @@ pub fn update(
     .ensure_children()
     .nodes_mut()
     .push(mem::init(kdl::KdlNode::new(PATCH), |node| {
-      node.insert(0, patch.path.file_name());
+      node.insert(0, patch.file_name());
       node.insert(CRC_32, patch_digest);
       let children = node.ensure_children().nodes_mut();
       children.push(mem::init(kdl::KdlNode::new(HACK), |node| {
@@ -125,10 +141,9 @@ pub fn update(
 
 #[non_exhaustive]
 #[derive(Debug, Error, Diagnostic)]
-pub enum Error {
+pub enum GetOrCreateError {
   #[error(transparent)]
-  #[diagnostic(transparent)]
-  IO(#[from] fs::Error),
+  IO(#[from] io::Error),
   #[error(transparent)]
   #[diagnostic(transparent)]
   Kdl(#[from] kdl::CheckFailure),

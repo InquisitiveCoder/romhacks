@@ -1,7 +1,7 @@
 use crate::convert::prelude::*;
-use crate::error::prelude::*;
 use crate::io::prelude::*;
-use crate::{io, mem};
+use crate::{io, mem, patch};
+use std::borrow::Cow;
 use std::fmt::Formatter;
 use std::num;
 
@@ -11,7 +11,7 @@ const BLOCK_CHECK_LENGTH: usize = 1024;
 pub fn patch(
   rom: &mut (impl Read + Write + Seek),
   ppf: &mut (impl Read + Seek),
-) -> Result<(), Error> {
+) -> Result<(), patch::Error> {
   // This value isn't needed yet, but it's better to obtain it now since doing
   // so later might discard the internal buffer of the BufReader.
   let eof: u64 = ppf.seek(io::SeekFrom::End(0))?;
@@ -43,30 +43,26 @@ impl Format {
     ppf: &mut io::BufReader<impl Read + Seek>,
     rom: &mut (impl Read + Seek),
     eof: u64,
-  ) -> Result<Format, Error> {
+  ) -> Result<Format, patch::Error> {
     // applyppf3 parses the magic string to obtain the version number and
     // ignores the dedicated version byte. However, ROM Patcher JS checks both
     // and throws an error if they don't match. Given the latter's widespread
     // use, it's probably safe to follow its lead.
     let version = Version::try_from(&ppf.read_array::<5>()?)?;
     if version != Version::try_from(ppf.read_u8()?)? {
-      return Err(Error::Version);
+      return Err(patch::Error::BadPatch);
     }
 
-    const DESC_LEN: usize = 50;
     // The PPF docs don't specify the encoding of the description or the
-    // contents of unused space. In practice it always seems to be ASCII, with
-    // spaces (0x20) or (less commonly) nul (0x00) as padding. In that case,
+    // contents of unused space. In practice, it always seems to be ASCII, with
+    // spaces (0x20) or less commonly nul (0x00) as padding. In that case,
     // String::from_utf8_lossy will cast the byte slice without having to copy
     // and modify the string, while str::trim_end will handle trailing spaces.
     // Nul bytes aren't displayed even if they're in the middle of a string.
-    log::debug!(
-      "PPF patch description: {}",
-      String::from_utf8_lossy(&ppf.buffer()[..DESC_LEN]).trim_end()
-    );
-    // Because the description was read directly from the byte buffer, the
-    // BufReader's position still needs to be updated.
-    ppf.seek_relative(DESC_LEN as i64)?;
+    let description: [u8; 50] = ppf.read_array()?;
+    let description: Cow<str> = String::from_utf8_lossy(&description);
+    let description: &str = description.trim_end();
+    log::debug!("PPF patch description: {description}");
 
     Ok(match version {
       Version::V1 => Format {
@@ -77,7 +73,7 @@ impl Format {
       Version::V2 => {
         // File size checks were deprecated in V3 because they were unreliable,
         // but an absent file size might indicate an invalid PPF file.
-        num::NonZeroU32::try_from(ppf.read_u32::<LE>()?).map_err(|_| Error::ExpectedFileSize)?;
+        num::NonZeroU32::try_from(ppf.read_u32::<LE>()?).map_err(|_| patch::Error::BadPatch)?;
         BlockCheck(ImageType::BIN).validate(ppf, rom)?;
         let pos: u64 = 60 + BLOCK_CHECK_LENGTH as u64;
         let end_of_patch = Self::find_end_of_patch(ppf, FooterBodyLengthType::U32, pos..eof)?;
@@ -91,10 +87,10 @@ impl Format {
         let image_type = ImageType::try_from(ppf.read_u8()?)?;
         let has_block_check = (ppf.read_u8()?)
           .try_into_bool()
-          .map_err(|_| Error::BlockCheckFlag)?;
+          .map_err(|_| patch::Error::BadPatch)?;
         let has_undo_data = (ppf.read_u8()?)
           .try_into_bool()
-          .map_err(|_| Error::UndoDataFlag)?;
+          .map_err(|_| patch::Error::BadPatch)?;
         ppf.seek_relative(1)?; // Unused in V3
         let pos: u64 = 60 + (has_block_check as u64 * BLOCK_CHECK_LENGTH as u64);
         if has_block_check {
@@ -127,7 +123,7 @@ impl Format {
     ppf: &mut io::BufReader<R>,
     body_len_type: FooterBodyLengthType,
     range: std::ops::Range<u64>,
-  ) -> Result<u64, Error> {
+  ) -> Result<u64, patch::Error> {
     const BEGIN_MAGIC: &[u8] = b"@BEGIN_FILE_ID.DIZ";
     const END_MAGIC: &[u8] = b"@END_FILE_ID.DIZ";
     const MAX_BODY_LENGTH: u32 = 3072;
@@ -207,7 +203,7 @@ impl Format {
       // If the body length stored in the file is larger than the max defined
       // in the PPF specs, or it's larger than the non-header region of the
       // file, the file is probably corrupt.
-      return Err(Error::FooterLength);
+      return Err(patch::Error::BadPatch);
     }
 
     ppf.seek_relative(-(footer_len as i64))?;
@@ -215,7 +211,7 @@ impl Format {
     if buf != BEGIN_MAGIC {
       // If the file contains an end-of-footer string without a matching
       // start-of-footer string, the file is probably corrupt.
-      return Err(Error::FooterLength);
+      return Err(patch::Error::BadPatch);
     }
 
     // Found the footer. Seek back to the start of the patch.
@@ -229,7 +225,7 @@ impl Format {
     self: Format,
     ppf: &mut io::BufReader<impl Read + Seek>,
     rom: &mut (impl Read + Write + Seek),
-  ) -> Result<(), Error> {
+  ) -> Result<(), patch::Error> {
     let Format { patch_range, rom_offset_type, has_undo_data } = self;
     let mut ppf = ppf.take(patch_range.end - patch_range.start);
     let mut rom = io::BufWriter::new(rom);
@@ -242,7 +238,7 @@ impl Format {
 
       let hunk_length: u64 = match num::NonZeroU8::new(ppf.read_u8()?) {
         Some(x) => x.get() as u64,
-        None => Err(Error::EmptyHunk)?,
+        None => Err(patch::Error::BadPatch)?,
       };
 
       // Seeking will flush the buffer so we don't want to do it if we're
@@ -276,14 +272,18 @@ impl Format {
 pub struct BlockCheck(ImageType);
 
 impl BlockCheck {
-  pub fn validate(&self, ppf: &mut impl Read, file: &mut (impl Read + Seek)) -> Result<(), Error> {
+  pub fn validate(
+    &self,
+    ppf: &mut impl Read,
+    file: &mut (impl Read + Seek),
+  ) -> Result<(), patch::Error> {
     file.seek(io::SeekFrom::Start(
       self.0.block_check_offset().get().into(),
     ))?;
     let file_block: [u8; BLOCK_CHECK_LENGTH] = file.read_array()?;
     let validation_block: [u8; BLOCK_CHECK_LENGTH] = ppf.read_array()?;
     if file_block != validation_block {
-      Err(Error::BlockCheckFailed)?;
+      Err(patch::Error::BadPatch)?;
     }
     Ok(())
   }
@@ -309,27 +309,27 @@ impl std::fmt::Display for Version {
 }
 
 impl TryFrom<&[u8; 5]> for Version {
-  type Error = Error;
+  type Error = patch::Error;
 
   fn try_from(value: &[u8; 5]) -> Result<Self, Self::Error> {
     match value {
       b"PPF10" => Ok(Version::V1),
       b"PPF20" => Ok(Version::V2),
       b"PPF30" => Ok(Version::V3),
-      _ => Err(Error::Version),
+      _ => Err(patch::Error::BadPatch),
     }
   }
 }
 
 impl TryFrom<u8> for Version {
-  type Error = Error;
+  type Error = patch::Error;
 
   fn try_from(value: u8) -> Result<Self, Self::Error> {
     match value {
       0 => Ok(Version::V1),
       1 => Ok(Version::V2),
       2 => Ok(Version::V3),
-      _ => Err(Error::Version),
+      _ => Err(patch::Error::BadPatch),
     }
   }
 }
@@ -352,13 +352,13 @@ impl ImageType {
 }
 
 impl TryFrom<u8> for ImageType {
-  type Error = Error;
+  type Error = patch::Error;
 
   fn try_from(value: u8) -> Result<Self, Self::Error> {
     match value {
       0 => Ok(Self::BIN),
       1 => Ok(Self::GI),
-      _ => Err(Error::ImageType),
+      _ => Err(patch::Error::BadPatch),
     }
   }
 }
@@ -393,26 +393,4 @@ impl RomOffsetType {
       Self::U64 => mem::size_of::<u64>(),
     }
   }
-}
-
-#[derive(Debug, Error)]
-pub enum Error {
-  #[error("The PPF header has an invalid version number.")]
-  Version,
-  #[error("PPF 3.0 header has an invalid image type flag.")]
-  ImageType,
-  #[error("PPF 3.0 header has an invalid block check flag.")]
-  BlockCheckFlag,
-  #[error("PPF 3.0 header has an invalid undo data flag.")]
-  UndoDataFlag,
-  #[error("PPF 2.0 header has an expected file size of 0 bytes. The PPF file may be corrupt.")]
-  ExpectedFileSize,
-  #[error("The length field of the file_id area is invalid. The PPF file may be corrupt.")]
-  FooterLength,
-  #[error("The ROM failed block check validation. This PPF file is not intended for this ROM.")]
-  BlockCheckFailed,
-  #[error("Encountered a hunk with a length of 0 bytes. The PPF file may be corrupt.")]
-  EmptyHunk,
-  #[error(transparent)]
-  IO(#[from] io::Error),
 }

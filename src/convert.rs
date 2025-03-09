@@ -1,5 +1,4 @@
 use crate::error::prelude::*;
-pub use std::convert::*;
 
 pub mod prelude {
   pub use super::TryIntoBool;

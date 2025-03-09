@@ -1,19 +1,27 @@
 use crate::error::prelude::*;
-use crate::{error, fs, io, path};
-use std::{ffi, fmt};
+use crate::io::Resize;
+use crate::{crc, error, io, path};
+use std::io::{ErrorKind, Read, Seek, Write};
+use std::{fmt, fs};
+use thiserror::__private::AsDynError;
 
+pub mod bps;
 pub mod ips;
 pub mod ppf;
+pub mod ups;
+mod varint;
+
+pub use self::err::*;
 
 #[derive(Clone, Debug)]
-pub struct Patch {
+pub struct Patch<P> {
   pub kind: Kind,
-  pub path: path::FilePathBuf,
+  pub file: P,
 }
 
-impl Patch {
-  pub fn new(kind: Kind, path: path::FilePathBuf) -> Self {
-    Self { kind, path }
+impl<P> Patch<P> {
+  pub fn new(kind: Kind, file: P) -> Self {
+    Self { kind, file }
   }
 }
 
@@ -24,27 +32,6 @@ pub enum Kind {
   BPS,
   PPF,
   XDELTA,
-}
-
-impl std::str::FromStr for Patch {
-  type Err = UnknownPatchKindError;
-
-  fn from_str(s: &str) -> Result<Self, Self::Err> {
-    let path = path::FilePathBuf::from_str(s)?;
-    let ext = path
-      .extension()
-      .and_then(ffi::OsStr::to_str)
-      .map(|str| str.to_ascii_lowercase())
-      .ok_or(UnknownPatchKindError(()))?;
-    match ext.as_str() {
-      "ips" => Ok(Patch::new(Kind::IPS, path)),
-      "ups" => Ok(Patch::new(Kind::UPS, path)),
-      "bps" => Ok(Patch::new(Kind::BPS, path)),
-      "ppf" => Ok(Patch::new(Kind::PPF, path)),
-      "xdelta" => Ok(Patch::new(Kind::XDELTA, path)),
-      _ => Err(UnknownPatchKindError(())),
-    }
-  }
 }
 
 impl fmt::Display for Kind {
@@ -70,96 +57,166 @@ impl fmt::Display for UnknownPatchKindError {
 
 impl error::Error for UnknownPatchKindError {}
 
-impl From<path::Error> for UnknownPatchKindError {
-  fn from(_value: path::Error) -> Self {
-    UnknownPatchKindError(())
-  }
-}
-
 #[derive(Clone, Copy, Debug)]
-pub struct Patcher(PatchFn);
+pub struct Patcher(Kind);
 
 impl Patcher {
-  pub const FLIPS: Self = flips::TOOL;
   pub fn from_patch_kind(patch_kind: Kind) -> Self {
-    match patch_kind {
-      Kind::IPS => Patcher(Patcher::ips),
-      Kind::UPS => Patcher::FLIPS,
-      Kind::BPS => Patcher::FLIPS,
-      Kind::PPF => Patcher(Patcher::ppf),
-      Kind::XDELTA => Patcher(Patcher::xdelta3),
+    Self(patch_kind)
+  }
+
+  pub fn patch<F, P>(
+    &self,
+    rom: &mut F,
+    patch: &mut P,
+    file_checksum: crc::Crc32,
+    patch_checksum: crc::Crc32,
+    patch_eof: u64,
+  ) -> Result<(), Error>
+  where
+    F: Read + Write + Seek + Resize,
+    P: Read + Seek,
+  {
+    match self.0 {
+      Kind::IPS => Patcher::ips(rom, patch, patch_eof),
+      Kind::UPS => Patcher::ups(rom, patch, file_checksum, patch_checksum),
+      Kind::BPS => Patcher::bps(rom, patch, file_checksum, patch_checksum, patch_eof),
+      Kind::PPF => Patcher::ppf(rom, patch),
+      Kind::XDELTA => Patcher::xdelta3(rom, patch),
     }
   }
 
-  pub fn patch(&self, file: impl AsRef<path::FilePath>, patch: &Patch) -> Result<(), Error> {
-    (self.0)(file.as_ref(), patch)
-  }
-
-  pub fn ips(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
-    let mut rom = fs::OpenOptions::new().write(true).open(&file)?;
-    let mut ips = io::BufReader::new(fs::File::open(&patch.path)?);
-    ips::patch(&mut rom, &mut ips)?;
+  fn ips<F, P>(rom: &mut F, patch: &mut P, patch_eof: u64) -> Result<(), Error>
+  where
+    F: Read + Write + Seek + Resize,
+    P: Read + Seek,
+  {
+    ips::patch(rom, patch, patch_eof)?;
     Ok(())
   }
 
-  fn ppf(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
-    let mut rom = fs::OpenOptions::new().read(true).write(true).open(&file)?;
-    let mut ppf = io::BufReader::new(fs::File::open(&patch.path)?);
-    ppf::patch(&mut rom, &mut ppf).map_err(|err| err.into())
+  fn ups<F, P>(
+    file: &mut F,
+    patch: &mut P,
+    file_checksum: crc::Crc32,
+    patch_checksum: crc::Crc32,
+  ) -> Result<(), crate::patch::Error>
+  where
+    F: Read + Write + Seek + Resize,
+    P: Read + Seek,
+  {
+    ups::patch(file, patch, file_checksum, patch_checksum)?;
+    Ok(())
   }
 
-  fn xdelta3(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
-    let rom = fs::read(file)?;
-    let patch = fs::read(&patch.path)?;
-    let patched = xdelta3::decode(&patch, &rom).ok_or(Error::XDelta3)?;
-    Ok(fs::write(file, &patched)?)
+  fn bps<F, P>(
+    file: &mut F,
+    patch: &mut P,
+    file_checksum: crc::Crc32,
+    patch_checksum: crc::Crc32,
+    patch_eof: u64,
+  ) -> Result<(), crate::patch::err::Error>
+  where
+    F: Read + Write + Seek + Resize,
+    P: Read + Seek,
+  {
+    // bps::patch(rom, patch, file_checksum, patch_checksum, patch_eof)?
+    let mut file_contents = vec![];
+    file.seek(io::SeekFrom::Start(0))?;
+    io::copy(file, &mut file_contents)?;
+    patch.seek(io::SeekFrom::Start(0))?;
+    let mut patch_contents = vec![];
+    io::copy(patch, &mut patch_contents)?;
+    let output = ::flips::BpsPatch::new(patch_contents)
+      .apply(&file_contents)
+      .map_err(|err| {
+        use crate::patch::err::Error as P;
+        use ::flips::Error as F;
+        match err {
+          F::NotThis => P::WrongInputFile,
+          F::ToOutput => P::AlreadyPatched,
+          F::Invalid => P::BadPatch,
+          F::Scrambled => P::BadPatch,
+          F::Identical => unreachable!(),
+          F::TooBig => P::FileTooLarge,
+          F::OutOfMem => P::IO(io::Error::from(ErrorKind::OutOfMemory)),
+          F::Canceled => P::IO(io::Error::from(ErrorKind::Interrupted)),
+        }
+      })?;
+    file.seek(io::SeekFrom::Start(0))?;
+    io::copy(&mut output.as_bytes(), file)?;
+    Ok(())
+  }
+
+  fn ppf<F, P>(rom: &mut F, ppf: &mut P) -> Result<(), Error>
+  where
+    F: Read + Write + Seek + Resize,
+    P: Read + Seek,
+  {
+    ppf::patch(rom, ppf).map_err(|err| err.into())
+  }
+
+  fn xdelta3<F, P>(file: &mut F, patch: &mut P) -> Result<(), Error>
+  where
+    F: Read + Write,
+    P: Read + Seek,
+  {
+    let mut rom: Vec<u8> = vec![];
+    io::copy(file, &mut rom)?;
+    let mut patch_contents: Vec<u8> = vec![];
+    io::copy(patch, &mut patch_contents)?;
+    let patched: Vec<u8> = xdelta3::decode(&patch_contents, &rom).ok_or(io::Error::new(
+      io::ErrorKind::InvalidData,
+      "xdelta3 patching failed",
+    ))?;
+    Ok(file.write_all(&patched)?)
   }
 }
 
-type PatchFn = fn(&path::FilePath, &Patch) -> Result<(), Error>;
+pub struct Args<'f, 'p, F, P> {
+  pub file: &'f mut F,
+  pub patch: &'p mut P,
+  pub file_checksum: crc::Crc32,
+  pub patch_checksum: crc::Crc32,
+}
 
-mod flips {
-  use super::*;
-  use ::flips;
+type PatchFn<P> = fn(&path::Path, &Patch<P>) -> Result<(), Error>;
 
-  pub const TOOL: Patcher = Patcher(command);
+mod err {
+  use crate::error::prelude::*;
+  use std::io;
 
-  fn command(file: &path::FilePath, patch: &Patch) -> Result<(), Error> {
-    let patch_kind = patch.kind;
-    let rom = fs::read(file)?;
-    let patch = fs::read(&patch.path)?;
-    match patch_kind {
-      Kind::IPS => {
-        let output = flips::IpsPatch::new(patch).apply(rom)?;
-        fs::write(file, output)?;
+  #[derive(Debug, Error)]
+  #[error(transparent)]
+  pub enum Error {
+    #[error(transparent)]
+    IO(io::Error),
+    #[error("The patch file is corrupt.")]
+    BadPatch,
+    #[error("The patch or ROM file is too large.")]
+    FileTooLarge,
+    #[error("The patch is not intended for the input file.")]
+    WrongInputFile,
+    #[error("This patch has already been applied to the input file.")]
+    AlreadyPatched,
+  }
+
+  impl From<io::Error> for Error {
+    fn from(err: io::Error) -> Error {
+      match err.kind() {
+        io::ErrorKind::UnexpectedEof => Error::BadPatch,
+        _ => Error::IO(err),
       }
-      Kind::UPS => {
-        let output = flips::UpsPatch::new(patch).apply(rom)?;
-        fs::write(file, output)?
-      }
-      Kind::BPS => {
-        let output = flips::BpsPatch::new(patch).apply(rom)?;
-        fs::write(file, output)?;
-      }
-      _ => unreachable!(),
     }
-    Ok(())
   }
-}
 
-#[non_exhaustive]
-#[derive(Debug, Error)]
-pub enum Error {
-  #[error(transparent)]
-  IO(#[from] io::Error),
-  #[error(transparent)]
-  File(#[from] fs::Error),
-  #[error(transparent)]
-  Flips(#[from] ::flips::Error),
-  #[error(transparent)]
-  IPS(#[from] ips::Error),
-  #[error(transparent)]
-  PPF(#[from] ppf::Error),
-  #[error("Failed to apply XDelta 3 patch.")]
-  XDelta3,
+  impl From<flips::Error> for Error {
+    fn from(value: flips::Error) -> Self {
+      match value {
+        flips::Error::NotThis => Error::WrongInputFile,
+        flips::Error::ToOutput => Error::AlreadyPatched,
+        _ => Error::BadPatch,
+      }
+    }
+  }
 }

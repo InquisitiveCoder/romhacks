@@ -1,9 +1,10 @@
-use crate::{fs, mem};
+use crate::mem;
+use fs_err as fs;
 pub use std::io::*;
 
 /// Exports all traits and marker types used by this crate.
 pub mod prelude {
-  pub use super::{ReadArray, Resize, WriteRepeated};
+  pub use super::{ReadArray, Resize};
   pub use byteorder::{ReadBytesExt, BE, LE};
   pub use std::io::prelude::*;
 }
@@ -16,29 +17,9 @@ pub trait ReadArray: Read {
 
 impl<T: Read> ReadArray for T {}
 
-pub trait WriteRepeated: Write {
-  /// Equivalent to [Write::write_all] with a buffer of length `count`
-  /// initialized with `byte`. For large counts, `write_all` will be called
-  /// multiple times.
-  fn write_repeated(&mut self, byte: u8, count: usize) -> Result<()>;
-}
-
-impl<T: Write> WriteRepeated for T {
-  fn write_repeated(&mut self, byte: u8, count: usize) -> Result<()> {
-    let mut remaining: usize = count;
-    let buf = [byte; 8 * 1024];
-    while remaining != 0 {
-      let written = usize::min(remaining, buf.len());
-      self.write_all(&buf[..written])?;
-      remaining -= written;
-    }
-    Ok(())
-  }
-}
-
 /// File-like types that support resizing.
 pub trait Resize {
-  /// See [std::fs::File::set_len].
+  /// See [File::set_len](fs::File::set_len).
   fn set_len(&mut self, new_size: u64) -> Result<()>;
 }
 

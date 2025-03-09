@@ -3,7 +3,7 @@ use crate::{kdl, manifest, path};
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Args {
-  pub manifest_path: path::FilePathBuf,
+  pub manifest_path: path::Utf8NativeFilePath,
 }
 
 impl Args {
