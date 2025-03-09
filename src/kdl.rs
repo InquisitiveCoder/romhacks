@@ -59,7 +59,7 @@ where
     self.name == node.name().value()
       && node
         .get(self.entry.0)
-        .is_some_and(|entry| self.entry.1 == *entry.value())
+        .is_some_and(|value| self.entry.1 == *value)
   }
 }
 
@@ -92,13 +92,13 @@ impl ValueRepr for crc::Crc32 {
 
 impl From<crc::Crc32> for KdlValue {
   fn from(crc32: crc::Crc32) -> Self {
-    KdlValue::Base16(crc32.value().into())
+    KdlValue::Integer(crc32.value().into())
   }
 }
 
 impl PartialEq<KdlValue> for crc::Crc32 {
   fn eq(&self, other: &KdlValue) -> bool {
-    Some(self.value() as i64) == other.as_i64()
+    Some(self.value() as i128) == other.as_integer()
   }
 }
 

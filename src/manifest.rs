@@ -46,7 +46,7 @@ fn monomorphic_get_or_create(
         Ok(create())
       } else {
         Err(err.into())
-      }
+      };
     }
   };
 
@@ -100,7 +100,7 @@ fn validate_file(
     .iter()
     .find(|node| node.name().value() == RESULT)
     .and_then(|node| node.get(CRC_32))
-    .and_then(|entry| entry.value().as_i64().map(|x| x as u32))
+    .and_then(|value| value.as_integer().map(|x: i128| x as u32))
     .map(crc::Crc32::new)
     .unwrap();
   if file_crc32 != last_result_crc32 {

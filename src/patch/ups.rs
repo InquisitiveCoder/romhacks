@@ -1,7 +1,7 @@
 use crate::crc;
 use crate::io::prelude::*;
-use crate::patch::varint::{overflow_err, ReadVarInt};
 use crate::patch::Error;
+use crate::patch::varint::{ReadVarInt, overflow_err};
 use ::rayon::prelude::*;
 use std::ops::{Deref, DerefMut};
 use std::{io, iter};
@@ -98,7 +98,7 @@ fn apply_hunk(
     rom.write_all(rom_hunk)?;
     // Add 1 to account for the NUL byte.
     hunks.consume(size + 1);
-    if (is_end_of_hunk) {
+    if is_end_of_hunk {
       break;
     }
   }
