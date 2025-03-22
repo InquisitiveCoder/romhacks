@@ -19,13 +19,13 @@ pub struct NodeId<N, K, V> {
   entry: (K, V),
 }
 
-impl<N, K, V> NodeId<N, K, V>
+impl<I, K, V> NodeId<I, K, V>
 where
-  N: Into<KdlIdentifier> + for<'a> PartialEq<&'a str>,
+  I: Into<KdlIdentifier> + for<'a> PartialEq<&'a str>,
   K: Into<NodeKey> + Copy,
   V: Into<KdlValue> + PartialEq<KdlValue>,
 {
-  pub fn new<R>(name: N, entry: (K, R)) -> Self
+  pub fn new<R>(name: I, entry: (K, R)) -> Self
   where
     R: ValueRepr<Repr = V>,
   {

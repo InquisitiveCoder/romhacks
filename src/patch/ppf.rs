@@ -5,21 +5,23 @@ use std::borrow::Cow;
 use std::fmt::Formatter;
 use std::num;
 
+pub const MAGIC: &[u8] = b"PPF";
+
 const BLOCK_CHECK_LENGTH: usize = 1024;
 
 /// Applies a PPF patch to a ROM.
 pub fn patch(
   rom: &mut (impl Read + Write + Seek),
-  ppf: &mut (impl Read + Seek),
+  patch: &mut (impl Read + Seek),
 ) -> Result<(), patch::Error> {
   // This value isn't needed yet, but it's better to obtain it now since doing
   // so later might discard the internal buffer of the BufReader.
-  let eof: u64 = ppf.seek(io::SeekFrom::End(0))?;
-  ppf.seek(io::SeekFrom::Start(0))?;
-  let mut ppf = io::BufReader::new(ppf);
+  let eof: u64 = patch.seek(io::SeekFrom::End(0))?;
+  patch.seek(io::SeekFrom::Start(0))?;
+  let mut patch = io::BufReader::new(patch);
 
-  let format = Format::parse_and_validate(&mut ppf, rom, eof)?;
-  format.apply_patch(&mut ppf, rom)?;
+  let format = Format::parse_and_validate(&mut patch, rom, eof)?;
+  format.apply_patch(&mut patch, rom)?;
   Ok(())
 }
 
@@ -34,13 +36,13 @@ struct Format {
 impl Format {
   /// Parses the PPF header and footer and performs block check validation.
   ///
-  /// `ppf`'s cursor must be at the start of the file, and `eof` must be the
+  /// `patch`'s cursor must be at the start of the file, and `eof` must be the
   /// length of the PPF file.
   ///
-  /// If this method returns `Ok`, `ppf` will be positioned at the start of the
-  /// patch data. No guarantees are made about its cursor position otherwise.
+  /// If this method returns `Ok`, `patch` will be positioned at the start of
+  /// the patch data. No guarantees are made about its cursor position otherwise.
   pub fn parse_and_validate(
-    ppf: &mut io::BufReader<impl Read + Seek>,
+    patch: &mut io::BufReader<impl Read + Seek>,
     rom: &mut (impl Read + Seek),
     eof: u64,
   ) -> Result<Format, patch::Error> {
@@ -48,8 +50,8 @@ impl Format {
     // ignores the dedicated version byte. However, ROM Patcher JS checks both
     // and throws an error if they don't match. Given the latter's widespread
     // use, it's probably safe to follow its lead.
-    let version = Version::try_from(&ppf.read_array::<5>()?)?;
-    if version != Version::try_from(ppf.read_u8()?)? {
+    let version = Version::try_from(&patch.read_array::<5>()?)?;
+    if version != Version::try_from(patch.read_u8()?)? {
       return Err(patch::Error::BadPatch);
     }
 
@@ -59,7 +61,7 @@ impl Format {
     // String::from_utf8_lossy will cast the byte slice without having to copy
     // and modify the string, while str::trim_end will handle trailing spaces.
     // Nul bytes aren't displayed even if they're in the middle of a string.
-    let description: [u8; 50] = ppf.read_array()?;
+    let description: [u8; 50] = patch.read_array()?;
     let description: Cow<str> = String::from_utf8_lossy(&description);
     let description: &str = description.trim_end();
     log::debug!("PPF patch description: {description}");
@@ -73,10 +75,10 @@ impl Format {
       Version::V2 => {
         // File size checks were deprecated in V3 because they were unreliable,
         // but an absent file size might indicate an invalid PPF file.
-        num::NonZeroU32::try_from(ppf.read_u32::<LE>()?).map_err(|_| patch::Error::BadPatch)?;
-        BlockCheck(ImageType::BIN).validate(ppf, rom)?;
+        num::NonZeroU32::try_from(patch.read_u32::<LE>()?).map_err(|_| patch::Error::BadPatch)?;
+        BlockCheck(ImageType::BIN).validate(patch, rom)?;
         let pos: u64 = 60 + BLOCK_CHECK_LENGTH as u64;
-        let end_of_patch = Self::find_end_of_patch(ppf, FooterBodyLengthType::U32, pos..eof)?;
+        let end_of_patch = Self::find_end_of_patch(patch, FooterBodyLengthType::U32, pos..eof)?;
         Format {
           patch_range: pos..end_of_patch,
           rom_offset_type: RomOffsetType::U32,
@@ -84,19 +86,19 @@ impl Format {
         }
       }
       Version::V3 => {
-        let image_type = ImageType::try_from(ppf.read_u8()?)?;
-        let has_block_check = (ppf.read_u8()?)
+        let image_type = ImageType::try_from(patch.read_u8()?)?;
+        let has_block_check = (patch.read_u8()?)
           .try_into_bool()
           .map_err(|_| patch::Error::BadPatch)?;
-        let has_undo_data = (ppf.read_u8()?)
+        let has_undo_data = (patch.read_u8()?)
           .try_into_bool()
           .map_err(|_| patch::Error::BadPatch)?;
-        ppf.seek_relative(1)?; // Unused in V3
+        patch.seek_relative(1)?; // Unused in V3
         let pos: u64 = 60 + (has_block_check as u64 * BLOCK_CHECK_LENGTH as u64);
         if has_block_check {
-          BlockCheck(image_type).validate(ppf, rom)?;
+          BlockCheck(image_type).validate(patch, rom)?;
         }
-        let end_of_patch = Self::find_end_of_patch(ppf, FooterBodyLengthType::U16, pos..eof)?;
+        let end_of_patch = Self::find_end_of_patch(patch, FooterBodyLengthType::U16, pos..eof)?;
         Format {
           patch_range: pos..end_of_patch,
           rom_offset_type: RomOffsetType::U64,
@@ -120,7 +122,7 @@ impl Format {
   /// ambiguity with the term "file_id area", this code uses the terms "footer"
   /// and "body" instead.
   fn find_end_of_patch<R: Read + Seek>(
-    ppf: &mut io::BufReader<R>,
+    patch: &mut io::BufReader<R>,
     body_len_type: FooterBodyLengthType,
     range: std::ops::Range<u64>,
   ) -> Result<u64, patch::Error> {
@@ -148,14 +150,14 @@ impl Format {
     // If file is larger than the read buffer, the BufReader will need to refill
     // its buffer at some point. Instead of letting the BufReader refill the
     // buffer at an arbitrary position close to the end of the file, it's better
-    // to refill it with the last ppf.capacity() bytes so that we can backtrack
+    // to refill it with the last patch.capacity() bytes so that we can backtrack
     // within the buffer instead of seeking backwards beyond the start of the
     // buffer and performing an additional read.
-    let end_buf_pos: u64 = if range.end > ppf.capacity() as u64 {
+    let end_buf_pos: u64 = if range.end > patch.capacity() as u64 {
       // The buffer needs to be empty for BufReader::fill_buf to refill it;
       // BufReader::seek will always discard the buffer.
-      let pos: u64 = ppf.seek(io::SeekFrom::End(-(ppf.capacity() as i64)))?;
-      ppf.fill_buf()?;
+      let pos: u64 = patch.seek(io::SeekFrom::End(-(patch.capacity() as i64)))?;
+      patch.fill_buf()?;
       pos
     } else {
       range.start
@@ -166,27 +168,27 @@ impl Format {
 
     // Seek to the end-of-footer magic string.
     let end_magic_pos: u64 = range.end - footer_end_len;
-    ppf.seek_relative((end_magic_pos - end_buf_pos) as i64)?;
+    patch.seek_relative((end_magic_pos - end_buf_pos) as i64)?;
 
-    let seek_to_start = |ppf: &mut io::BufReader<R>, pos: u64| -> io::Result<()> {
+    let seek_to_start = |patch: &mut io::BufReader<R>, pos: u64| -> io::Result<()> {
       if range.start >= end_buf_pos {
         // The start of the patch area falls within the read buffer.
         // Perform a relative seek to keep the buffer.
-        ppf.seek_relative(range.start as i64 - pos as i64)
+        patch.seek_relative(range.start as i64 - pos as i64)
       } else {
         // The start of the patch area isn't in the buffer, so the buffer will
         // be discarded regardless of how we seek. An absolute seek is simpler
         // and avoids overflow issues when calculating this offset.
-        ppf.seek(io::SeekFrom::Start(range.start))?;
+        patch.seek(io::SeekFrom::Start(range.start))?;
         Ok(())
       }
     };
 
-    let buf = mem::try_init([0u8; END_MAGIC.len()], |buf| ppf.read_exact(&mut buf[..]))?;
+    let buf = mem::try_init([0u8; END_MAGIC.len()], |buf| patch.read_exact(&mut buf[..]))?;
     // If there's no footer, seek back to the start of the patch data and return
     // EOF. This is the most common case.
     if buf != END_MAGIC {
-      seek_to_start(ppf, end_magic_pos)?;
+      seek_to_start(patch, end_magic_pos)?;
       return Ok(range.end);
     }
 
@@ -194,7 +196,7 @@ impl Format {
       // Little endian order yields the same numerical value at larger sizes,
       // so a 4 byte buffer can be used for both a body_len_size of 2 and 4.
       let mut buf = [0u8; mem::size_of::<u32>()];
-      ppf.read_exact(&mut buf[..body_len_size])?;
+      patch.read_exact(&mut buf[..body_len_size])?;
       u32::from_le_bytes(buf)
     };
     let footer_len: u64 =
@@ -206,8 +208,10 @@ impl Format {
       return Err(patch::Error::BadPatch);
     }
 
-    ppf.seek_relative(-(footer_len as i64))?;
-    let buf = mem::try_init([0u8; BEGIN_MAGIC.len()], |buf| ppf.read_exact(&mut buf[..]))?;
+    patch.seek_relative(-(footer_len as i64))?;
+    let buf = mem::try_init([0u8; BEGIN_MAGIC.len()], |buf| {
+      patch.read_exact(&mut buf[..])
+    })?;
     if buf != BEGIN_MAGIC {
       // If the file contains an end-of-footer string without a matching
       // start-of-footer string, the file is probably corrupt.
@@ -217,26 +221,26 @@ impl Format {
     // Found the footer. Seek back to the start of the patch.
     let footer_pos = range.end - footer_len;
     let current_pos = footer_pos + BEGIN_MAGIC.len() as u64;
-    seek_to_start(ppf, current_pos)?;
+    seek_to_start(patch, current_pos)?;
     Ok(footer_pos)
   }
 
   pub fn apply_patch(
     self: Format,
-    ppf: &mut io::BufReader<impl Read + Seek>,
-    rom: &mut (impl Read + Write + Seek),
+    patch: &mut io::BufReader<impl Read + Seek>,
+    rom: &mut (impl Write + Seek),
   ) -> Result<(), patch::Error> {
     let Format { patch_range, rom_offset_type, has_undo_data } = self;
-    let mut ppf = ppf.take(patch_range.end - patch_range.start);
+    let mut patch = patch.take(patch_range.end - patch_range.start);
     let mut rom = io::BufWriter::new(rom);
     let mut rom_offset: u64 = 0;
 
     loop {
       let offset = u64::from_le_bytes(mem::try_init([0u8; mem::size_of::<u64>()], |buf| {
-        ppf.read_exact(&mut buf[..rom_offset_type.size()])
+        patch.read_exact(&mut buf[..rom_offset_type.size()])
       })?);
 
-      let hunk_length: u64 = match num::NonZeroU8::new(ppf.read_u8()?) {
+      let hunk_length: u64 = match num::NonZeroU8::new(patch.read_u8()?) {
         Some(x) => x.get() as u64,
         None => Err(patch::Error::BadPatch)?,
       };
@@ -249,15 +253,15 @@ impl Format {
         rom_offset = offset;
       }
 
-      io::copy(&mut ((&mut ppf).take(hunk_length)), &mut rom)?;
+      io::copy(&mut ((&mut patch).take(hunk_length)), &mut rom)?;
       rom_offset += hunk_length;
 
       if has_undo_data {
         // The Take adapter doesn't implement Seek, so discard the bytes into Sink.
-        io::copy(&mut (&mut ppf).take(hunk_length), &mut io::sink())?;
+        io::copy(&mut (&mut patch).take(hunk_length), &mut io::sink())?;
       }
 
-      if ppf.limit() == 0 {
+      if patch.limit() == 0 {
         break;
       }
     }
@@ -274,14 +278,14 @@ pub struct BlockCheck(ImageType);
 impl BlockCheck {
   pub fn validate(
     &self,
-    ppf: &mut impl Read,
+    patch: &mut impl Read,
     file: &mut (impl Read + Seek),
   ) -> Result<(), patch::Error> {
     file.seek(io::SeekFrom::Start(
       self.0.block_check_offset().get().into(),
     ))?;
     let file_block: [u8; BLOCK_CHECK_LENGTH] = file.read_array()?;
-    let validation_block: [u8; BLOCK_CHECK_LENGTH] = ppf.read_array()?;
+    let validation_block: [u8; BLOCK_CHECK_LENGTH] = patch.read_array()?;
     if file_block != validation_block {
       Err(patch::Error::BadPatch)?;
     }

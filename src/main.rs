@@ -16,7 +16,6 @@ mod log;
 mod manifest;
 mod mem;
 mod patch;
-mod path;
 mod validate;
 
 fn main() -> miette::Result<()> {
@@ -54,7 +53,6 @@ impl process::Termination for Error {
         K::AlreadyPatched => 4,
         K::ManifestOutdated => 5,
         K::Patching => 6,
-        K::FileTooLarge => 7,
       },
       Error::ValidateError(_) => 2,
     })

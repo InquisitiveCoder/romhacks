@@ -1,13 +1,14 @@
 use crate::crc;
 use crate::io::prelude::*;
 use crate::patch::Error;
-use crate::patch::varint::{ReadVarInt, overflow_err};
+use crate::patch::varint::{ReadByuuVarInt, overflow_err};
 use ::rayon::prelude::*;
 use std::ops::{Deref, DerefMut};
 use std::{io, iter};
 use wide::u8x16;
 
-const MAGIC: &[u8] = b"UPS1";
+pub const MAGIC: &[u8] = b"UPS";
+
 const FOOTER_SIZE: usize = 3 * size_of::<u32>();
 const BUF_SIZE: usize = 8 * 1024; // default buffer size used by std::io
 const SIMD_SIZE: usize = u8x16::LANES as usize;
@@ -18,18 +19,18 @@ pub fn patch(
   file_checksum: crc::Crc32,
   patch_checksum: crc::Crc32,
 ) -> Result<(), Error> {
-  let mut ups = io::BufReader::with_capacity(BUF_SIZE, patch);
+  let mut patch = io::BufReader::with_capacity(BUF_SIZE, patch);
 
-  let start_of_checksums = ups.seek(io::SeekFrom::End(-(FOOTER_SIZE as i64)))? as i64;
-  validate_checksums(&mut ups, file_checksum, patch_checksum)?;
+  let start_of_checksums = patch.seek(io::SeekFrom::End(-(FOOTER_SIZE as i64)))? as i64;
+  validate_checksums(&mut patch, file_checksum, patch_checksum)?;
 
-  ups.seek(io::SeekFrom::Start(0))?;
-  if &ups.read_array::<4>()? != MAGIC {
+  patch.seek(io::SeekFrom::Start(0))?;
+  if &patch.read_array::<4>()? != b"UPS1" {
     return Err(Error::BadPatch);
   }
 
-  let input_rom_size: u64 = ups.read_varint()?;
-  let output_rom_size: u64 = ups.read_varint()?;
+  let input_rom_size: u64 = patch.read_varint()?;
+  let output_rom_size: u64 = patch.read_varint()?;
 
   // don't make a syscall if it's not necessary
   if input_rom_size != output_rom_size {
@@ -38,7 +39,7 @@ pub fn patch(
   rom.seek(io::SeekFrom::Start(0))?;
 
   let mut rom_buf = CacheAlignedBuffer([0u8; BUF_SIZE]);
-  let mut hunks = ups.take(start_of_checksums as u64 - MAGIC.len() as u64);
+  let mut hunks = patch.take(start_of_checksums as u64 - MAGIC.len() as u64);
   loop {
     let offset = i64::try_from(hunks.read_varint()?) //
       .map_err(|_| overflow_err())?;
@@ -53,13 +54,13 @@ pub fn patch(
 }
 
 fn validate_checksums(
-  ups: &mut io::BufReader<&mut (impl Read + Seek + Sized)>,
+  patch: &mut io::BufReader<&mut (impl Read + Seek + Sized)>,
   file_checksum: crc::Crc32,
   patch_checksum: crc::Crc32,
 ) -> Result<(), Error> {
-  let expected_file_checksum = crc::Crc32::new(ups.read_u32::<LE>()?);
-  let result_checksum = crc::Crc32::new(ups.read_u32::<LE>()?);
-  let expected_patch_checksum = crc::Crc32::new(ups.read_u32::<LE>()?);
+  let expected_file_checksum = crc::Crc32::new(patch.read_u32::<LE>()?);
+  let result_checksum = crc::Crc32::new(patch.read_u32::<LE>()?);
+  let expected_patch_checksum = crc::Crc32::new(patch.read_u32::<LE>()?);
 
   // Check if the patch is valid before anything else.
   if patch_checksum != expected_patch_checksum {

@@ -1,15 +1,15 @@
 use crate::error::prelude::*;
 use crate::io::Resize;
-use crate::{crc, error, io, path};
+use crate::{crc, error, io};
 use std::io::{ErrorKind, Read, Seek, Write};
-use std::{fmt, fs};
-use thiserror::__private::AsDynError;
+use std::{fmt, path};
 
 pub mod bps;
 pub mod ips;
 pub mod ppf;
 pub mod ups;
 mod varint;
+pub mod vcd;
 
 pub use self::err::*;
 
@@ -31,7 +31,7 @@ pub enum Kind {
   UPS,
   BPS,
   PPF,
-  XDELTA,
+  VCD,
 }
 
 impl fmt::Display for Kind {
@@ -41,7 +41,7 @@ impl fmt::Display for Kind {
       Kind::UPS => write!(f, "UPS"),
       Kind::BPS => write!(f, "BPS"),
       Kind::PPF => write!(f, "PPF"),
-      Kind::XDELTA => write!(f, "VCDIFF (a.k.a. xdelta)"),
+      Kind::VCD => write!(f, "Vcdiff (a.k.a. xdelta)"),
     }
   }
 }
@@ -65,69 +65,73 @@ impl Patcher {
     Self(patch_kind)
   }
 
-  pub fn patch<F, P>(
+  pub fn patch<R, P, O>(
     &self,
-    rom: &mut F,
+    rom: &mut R,
     patch: &mut P,
-    file_checksum: crc::Crc32,
+    output: &mut O,
+    rom_checksum: crc::Crc32,
     patch_checksum: crc::Crc32,
     patch_eof: u64,
   ) -> Result<(), Error>
   where
-    F: Read + Write + Seek + Resize,
+    R: Read + Seek,
     P: Read + Seek,
+    O: Read + Write + Seek + Resize,
   {
     match self.0 {
-      Kind::IPS => Patcher::ips(rom, patch, patch_eof),
-      Kind::UPS => Patcher::ups(rom, patch, file_checksum, patch_checksum),
-      Kind::BPS => Patcher::bps(rom, patch, file_checksum, patch_checksum, patch_eof),
-      Kind::PPF => Patcher::ppf(rom, patch),
-      Kind::XDELTA => Patcher::xdelta3(rom, patch),
+      Kind::IPS => Patcher::ips(output, patch),
+      Kind::UPS => Patcher::ups(output, patch, rom_checksum, patch_checksum),
+      Kind::BPS => Patcher::bps(rom, patch, output, rom_checksum, patch_checksum, patch_eof),
+      Kind::PPF => Patcher::ppf(output, patch),
+      Kind::VCD => Patcher::vcdiff(rom, patch, output),
     }
   }
 
-  fn ips<F, P>(rom: &mut F, patch: &mut P, patch_eof: u64) -> Result<(), Error>
+  fn ips<R, P>(rom: &mut R, patch: &mut P) -> Result<(), Error>
   where
-    F: Read + Write + Seek + Resize,
+    R: Write + Seek + Resize,
     P: Read + Seek,
   {
-    ips::patch(rom, patch, patch_eof)?;
+    ips::patch(rom, patch)?;
     Ok(())
   }
 
-  fn ups<F, P>(
-    file: &mut F,
+  fn ups<R, P>(
+    rom: &mut R,
     patch: &mut P,
-    file_checksum: crc::Crc32,
+    rom_checksum: crc::Crc32,
     patch_checksum: crc::Crc32,
   ) -> Result<(), crate::patch::Error>
   where
-    F: Read + Write + Seek + Resize,
+    R: Read + Write + Seek + Resize,
     P: Read + Seek,
   {
-    ups::patch(file, patch, file_checksum, patch_checksum)?;
+    ups::patch(rom, patch, rom_checksum, patch_checksum)?;
     Ok(())
   }
 
-  fn bps<F, P>(
-    file: &mut F,
+  fn bps<R, P, O>(
+    rom: &mut R,
     patch: &mut P,
-    file_checksum: crc::Crc32,
+    output: &mut O,
+    rom_checksum: crc::Crc32,
     patch_checksum: crc::Crc32,
     patch_eof: u64,
   ) -> Result<(), crate::patch::err::Error>
   where
-    F: Read + Write + Seek + Resize,
+    R: Read + Seek,
     P: Read + Seek,
+    O: Read + Write + Seek + Resize,
   {
     // bps::patch(rom, patch, file_checksum, patch_checksum, patch_eof)?
     let mut file_contents = vec![];
-    file.seek(io::SeekFrom::Start(0))?;
-    io::copy(file, &mut file_contents)?;
+    rom.seek(io::SeekFrom::Start(0))?;
+    io::copy(rom, &mut file_contents)?;
     patch.seek(io::SeekFrom::Start(0))?;
     let mut patch_contents = vec![];
     io::copy(patch, &mut patch_contents)?;
-    let output = ::flips::BpsPatch::new(patch_contents)
+    let bps_output = ::flips::BpsPatch::new(patch_contents)
       .apply(&file_contents)
       .map_err(|err| {
         use crate::patch::err::Error as P;
@@ -143,33 +147,26 @@ impl Patcher {
           F::Canceled => P::IO(io::Error::from(ErrorKind::Interrupted)),
         }
       })?;
-    file.seek(io::SeekFrom::Start(0))?;
-    io::copy(&mut output.as_bytes(), file)?;
+    io::copy(&mut bps_output.as_bytes(), output)?;
     Ok(())
   }
 
-  fn ppf<F, P>(rom: &mut F, ppf: &mut P) -> Result<(), Error>
+  fn ppf<R, P>(rom: &mut R, ppf: &mut P) -> Result<(), Error>
   where
-    F: Read + Write + Seek + Resize,
+    R: Read + Write + Seek + Resize,
     P: Read + Seek,
   {
     ppf::patch(rom, ppf).map_err(|err| err.into())
   }
 
-  fn xdelta3<F, P>(file: &mut F, patch: &mut P) -> Result<(), Error>
+  fn vcdiff<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), Error>
   where
-    F: Read + Write,
+    R: Read + Seek,
     P: Read + Seek,
+    O: Read + Write + Seek + Resize,
   {
-    let mut rom: Vec<u8> = vec![];
-    io::copy(file, &mut rom)?;
-    let mut patch_contents: Vec<u8> = vec![];
-    io::copy(patch, &mut patch_contents)?;
-    let patched: Vec<u8> = xdelta3::decode(&patch_contents, &rom).ok_or(io::Error::new(
-      io::ErrorKind::InvalidData,
-      "xdelta3 patching failed",
-    ))?;
-    Ok(file.write_all(&patched)?)
+    vcd::patch(rom, patch, output)?;
+    Ok(())
   }
 }
 
@@ -193,6 +190,8 @@ mod err {
     IO(io::Error),
     #[error("The patch file is corrupt.")]
     BadPatch,
+    #[error("Unsupported patch.")]
+    UnsupportedPatchFeature,
     #[error("The patch or ROM file is too large.")]
     FileTooLarge,
     #[error("The patch is not intended for the input file.")]
@@ -205,6 +204,7 @@ mod err {
     fn from(err: io::Error) -> Error {
       match err.kind() {
         io::ErrorKind::UnexpectedEof => Error::BadPatch,
+        io::ErrorKind::InvalidData => Error::BadPatch,
         _ => Error::IO(err),
       }
     }

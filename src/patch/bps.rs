@@ -4,10 +4,13 @@ use std::{io, mem};
 
 use crate::io::prelude::*;
 
+pub const MAGIC: &[u8] = b"BPS";
+
 pub fn patch(
-  rom: &mut (impl Read + Write + Seek + Resize),
+  rom: &mut (impl Read + Seek),
   patch: &mut (impl Read + Seek),
-  file_checksum: crc::Crc32,
+  output: &mut (impl Read + Write + Seek),
+  rom_checksum: crc::Crc32,
   patch_checksum: crc::Crc32,
   patch_eof: u64,
 ) -> Result<Result<(), Error>, io::Error> {

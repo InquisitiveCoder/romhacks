@@ -1,19 +1,9 @@
+use crate::io;
 use crate::io::prelude::*;
-use crate::{io, path};
-use buf::ReadBuffer;
-use fs_err as fs;
-use std::sync::{Arc, Barrier, RwLock};
+use std::ops::DerefMut;
+use std::sync;
 
-type Buffer = buf::Buffer<{ 8 * 1024 }>;
-
-pub fn try_hash(file: &impl AsRef<path::Path>) -> io::Result<Crc32> {
-  try_hash_path(file.as_ref())
-}
-
-fn try_hash_path(file: &path::Path) -> io::Result<Crc32> {
-  let mut file = fs::File::open(file)?;
-  Crc32::read_and_hash(&mut file)
-}
+const BUF_SIZE: usize = 8 * 1024;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq, Hash)]
@@ -32,8 +22,8 @@ impl Crc32 {
     // The crc32 is computed in parallel.
     // The current thread updates a shared buffer which the crc32 thread reads.
     // The barrier is used to coordinate the handoff of read and write locks.
-    let rw_lock = Arc::new(RwLock::new(Buffer::new()));
-    let barrier = Arc::new(Barrier::new(2));
+    let rw_lock = sync::Arc::new(sync::RwLock::new(io::Cursor::new([0u8; BUF_SIZE])));
+    let barrier = sync::Arc::new(sync::Barrier::new(2));
 
     // This thread will wait on the barrier immediately.
     let crc32 = spawn_crc32_thread(&rw_lock, &barrier);
@@ -42,10 +32,11 @@ impl Crc32 {
       let eof: bool = {
         // Acquiring the lock fails iff a writer panicked while holding it.
         // Since this thread is the only writer, acquiring the lock can't fail.
-        let mut write_lock = rw_lock.write().unwrap();
-        let buffer: &mut Buffer = &mut (*write_lock);
-        reader.read_into(buffer)?;
-        buffer.len() == 0
+        let mut write_lock: sync::RwLockWriteGuard<_> = rw_lock.write().unwrap();
+        let buffer: &mut io::Cursor<[u8; BUF_SIZE]> = write_lock.deref_mut();
+        let bytes_copied = reader.read(&mut buffer.get_mut()[..])?;
+        buffer.set_position(bytes_copied as u64);
+        bytes_copied == 0
       };
       barrier.wait();
       // The crc32 thread is now holding a read lock to the buffer.
@@ -61,17 +52,17 @@ impl Crc32 {
 }
 
 fn spawn_crc32_thread(
-  lock: &Arc<RwLock<Buffer>>,
-  barrier: &Arc<Barrier>,
+  lock: &sync::Arc<sync::RwLock<io::Cursor<[u8; BUF_SIZE]>>>,
+  barrier: &sync::Arc<sync::Barrier>,
 ) -> std::thread::JoinHandle<u32> {
-  let lock = Arc::clone(lock);
-  let barrier = Arc::clone(barrier);
+  let lock = sync::Arc::clone(lock);
+  let barrier = sync::Arc::clone(barrier);
   std::thread::spawn(move || {
     let mut hasher = crc32fast::Hasher::new();
     loop {
       // The parent thread is holding the write lock.
       barrier.wait();
-      let buffer: Buffer = {
+      let buffer: io::Cursor<[u8; BUF_SIZE]> = {
         // Acquiring the lock fails iff a writer panicked while holding it.
         // The parent thread doesn't do anything that could panic while holding
         // the write lock, so acquiring the lock can't fail.
@@ -82,51 +73,11 @@ fn spawn_crc32_thread(
       barrier.wait();
       // Update the hash while the parent thread is busy copying more bytes into
       // the buffer.
-      if buffer.len() == 0 {
+      if buffer.position() == 0 {
         return hasher.finalize();
       } else {
-        hasher.update(&buffer);
+        hasher.update(&buffer.get_ref()[..buffer.position() as usize]);
       }
     }
   })
-}
-
-mod buf {
-  use super::*;
-  use std::ops::Deref;
-
-  #[derive(Clone, Debug)]
-  pub struct Buffer<const N: usize> {
-    array: [u8; N],
-    len: usize,
-  }
-
-  pub trait ReadBuffer: Read {
-    fn read_into<const N: usize>(&mut self, buf: &mut Buffer<N>) -> io::Result<()> {
-      buf.len = self.read(&mut buf.array[..])?;
-      Ok(())
-    }
-  }
-
-  impl<R: Read> ReadBuffer for R {}
-
-  impl<const N: usize> Buffer<N> {
-    pub const fn new() -> Self {
-      Self { array: [0u8; N], len: 0 }
-    }
-  }
-
-  impl<const N: usize> Deref for Buffer<N> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-      self.as_ref()
-    }
-  }
-
-  impl<const N: usize> AsRef<[u8]> for Buffer<N> {
-    fn as_ref(&self) -> &[u8] {
-      &self.array[..self.len]
-    }
-  }
 }

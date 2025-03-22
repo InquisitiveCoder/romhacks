@@ -1,9 +1,10 @@
 use crate::kdl::prelude::*;
-use crate::{kdl, manifest, path};
+use crate::{kdl, manifest};
+use std::path;
 
 #[derive(Clone, Debug, clap::Args)]
 pub struct Args {
-  pub manifest_path: path::Utf8NativeFilePath,
+  pub manifest_path: path::PathBuf,
 }
 
 impl Args {
