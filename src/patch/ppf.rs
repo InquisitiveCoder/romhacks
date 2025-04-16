@@ -1,8 +1,10 @@
 use crate::convert::prelude::*;
-use crate::io::prelude::*;
-use crate::{io, mem, patch};
+use crate::io_utils::prelude::*;
+use crate::{io_utils, mem, patch};
 use std::borrow::Cow;
 use std::fmt::Formatter;
+use std::io;
+use std::io::prelude::*;
 use std::num;
 
 pub const MAGIC: &[u8] = b"PPF";
@@ -11,8 +13,8 @@ const BLOCK_CHECK_LENGTH: usize = 1024;
 
 /// Applies a PPF patch to a ROM.
 pub fn patch(
-  rom: &mut (impl Read + Write + Seek),
   patch: &mut (impl Read + Seek),
+  output: &mut (impl Read + Write + Seek),
 ) -> Result<(), patch::Error> {
   // This value isn't needed yet, but it's better to obtain it now since doing
   // so later might discard the internal buffer of the BufReader.
@@ -20,8 +22,8 @@ pub fn patch(
   patch.seek(io::SeekFrom::Start(0))?;
   let mut patch = io::BufReader::new(patch);
 
-  let format = Format::parse_and_validate(&mut patch, rom, eof)?;
-  format.apply_patch(&mut patch, rom)?;
+  let format = Format::parse_and_validate(&mut patch, output, eof)?;
+  format.apply_patch(&mut patch, output)?;
   Ok(())
 }
 
@@ -253,12 +255,12 @@ impl Format {
         rom_offset = offset;
       }
 
-      io::copy(&mut ((&mut patch).take(hunk_length)), &mut rom)?;
+      io_utils::copy_exactly(hunk_length, &mut patch, &mut rom)?;
       rom_offset += hunk_length;
 
       if has_undo_data {
         // The Take adapter doesn't implement Seek, so discard the bytes into Sink.
-        io::copy(&mut (&mut patch).take(hunk_length), &mut io::sink())?;
+        io_utils::copy_exactly(hunk_length, &mut patch, &mut io::sink())?;
       }
 
       if patch.limit() == 0 {

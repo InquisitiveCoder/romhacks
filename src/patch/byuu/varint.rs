@@ -1,11 +1,19 @@
-use crate::io;
-use crate::io::prelude::*;
+use crate::io_utils;
+use crate::io_utils::prelude::*;
 use checked::Checked;
+use std::io;
+use std::io::prelude::*;
 
-pub trait ReadByuuVarInt: Read {
-  /// Reads a UPS or BPS varint. If the value overflows, returns
-  /// an [InvalidData](std::io::ErrorKind::InvalidData) error.
-  fn read_varint(&mut self) -> Result<u64, io::Error> {
+pub trait ReadNumber: Read {
+  /// Reads a UPS or BPS variable-length integer.
+  ///
+  /// In the specification for the UPS and BPS formats, this function is
+  /// called `decode`.
+  ///
+  /// # Errors
+  /// If the value overflows, this function returns an
+  /// [InvalidData](io::ErrorKind::InvalidData) error.
+  fn read_number(&mut self) -> Result<u64, io::Error> {
     let mut data: u64 = 0;
     let mut shift = Checked::<u64>::new(1);
     loop {
@@ -24,7 +32,7 @@ pub trait ReadByuuVarInt: Read {
   }
 }
 
-impl<R> ReadByuuVarInt for R where R: Read {}
+impl<R> ReadNumber for R where R: Read {}
 
 pub fn overflow_err() -> io::Error {
   io::Error::from(io::ErrorKind::InvalidData)

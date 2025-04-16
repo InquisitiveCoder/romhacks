@@ -1,8 +1,11 @@
+use crate::crc::HasCrc32;
 use crate::error::prelude::*;
+use crate::fs::HasPath;
 use crate::kdl::prelude::*;
-use crate::{crc, hack, io, kdl, mem};
+use crate::{crc, hack, kdl, mem};
 use fs_err as fs;
 use std::borrow::Cow;
+use std::io;
 use std::path;
 use std::str::FromStr;
 
@@ -22,14 +25,13 @@ const VERSION: &str = "version";
 
 pub fn get_or_create(
   manifest_path: &impl AsRef<path::Path>,
-  rom_path: &impl AsRef<path::Path>,
-  rom_digest: crc::Crc32,
+  rom: &(impl HasPath + HasCrc32),
   patch_digest: crc::Crc32,
 ) -> Result<kdl::KdlDocument, GetOrCreateError> {
   monomorphic_get_or_create(
     manifest_path.as_ref(),
-    rom_path.as_ref(),
-    rom_digest,
+    rom.path(),
+    rom.crc32(),
     patch_digest,
   )
 }

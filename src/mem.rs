@@ -17,14 +17,3 @@ where
   f(&mut value)?;
   Ok(value)
 }
-
-pub fn try_map<R, I, A, F>(value: A, f: F) -> Result<R, <I as TryInto<R>>::Error>
-where
-  A: Into<I>,
-  I: TryInto<R>,
-  F: FnOnce(&mut I),
-{
-  let mut inner: I = value.into();
-  f(&mut inner);
-  inner.try_into()
-}

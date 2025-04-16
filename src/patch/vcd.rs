@@ -1,10 +1,11 @@
-use crate::io;
-use crate::io::prelude::*;
+use crate::io_utils;
+use crate::io_utils::prelude::*;
 use crate::patch::Error;
 use crate::patch::vcd::cache::AddressCache;
 use byteorder::ReadBytesExt;
 use num_traits::{CheckedMul, Num};
-use std::io::{BufReader, Read, Seek, Write};
+use std::io;
+use std::io::prelude::*;
 use std::num::NonZeroU8;
 
 /// The magic string for Vcdiff patch files.
@@ -17,33 +18,32 @@ const VCD_CODETABLE: u8 = 2;
 const HAS_APPHEADER: u8 = 4;
 
 pub fn patch(
-  rom: &mut (impl Read + Seek),
-  patch: &mut (impl Read + Seek),
+  rom: &mut (impl BufRead + Seek),
+  patch: &mut impl BufRead,
   output: &mut (impl Read + Write + Seek),
 ) -> Result<(), Error> {
-  let mut patch = BufReader::new(patch);
+  let rom = rom.track_position_from_start();
+  let output = io_utils::PositionTracker::from_start(output);
 
   // header
-  {
-    if &patch.read_array::<3>()? != MAGIC {
-      return Err(Error::BadPatch);
-    }
+  if &patch.read_array::<3>()? != MAGIC {
+    return Err(Error::BadPatch);
+  }
 
-    let version = patch.read_u8()?;
-    if version != 0 {
-      return Err(Error::UnsupportedPatchFeature);
-    }
+  let version = patch.read_u8()?;
+  if version != 0 {
+    return Err(Error::UnsupportedPatchFeature);
+  }
 
-    let hdr_indicator = patch.read_u8()?;
-    if hdr_indicator & (VCD_CODETABLE | VCD_DECOMPRESS) != 0 {
-      return Err(Error::UnsupportedPatchFeature);
-    }
+  let hdr_indicator = patch.read_u8()?;
+  if hdr_indicator & (VCD_CODETABLE | VCD_DECOMPRESS) != 0 {
+    return Err(Error::UnsupportedPatchFeature);
+  }
 
-    if hdr_indicator & HAS_APPHEADER != 0 {
-      // Skip over the app header.
-      let header_size: u32 = patch.read_vcdiff_int()?;
-      patch.seek_relative(header_size as i64)?;
-    }
+  if hdr_indicator & HAS_APPHEADER != 0 {
+    // Skip over the app header.
+    let header_size: u32 = patch.read_integer()?;
+    patch.seek_relative(header_size as i64)?;
   }
 
   let mut patcher = Patcher::new(rom, patch, output);
@@ -88,30 +88,27 @@ where
     let source_window_len = match win_indicator {
       0 => 0,
       Self::VCD_SOURCE => {
-        let source_len: u32 = patch.read_vcdiff_int()?;
-        let source_position: u64 = patch.read_vcdiff_int()?;
+        let source_len: u32 = patch.read_integer()?;
+        let source_position: u64 = patch.read_integer()?;
         rom.seek(io::SeekFrom::Start(source_position))?;
-        io::copy(&mut rom.take(source_len as u64), &mut buffers.superstring)?;
+        io_utils::copy_exactly(source_len as u64, rom, &mut buffers.superstring)?;
         source_len
       }
       Self::VCD_TARGET => {
-        let source_len: u32 = patch.read_vcdiff_int()?;
-        let source_position: u64 = patch.read_vcdiff_int()?;
+        let source_len: u32 = patch.read_integer()?;
+        let source_position: u64 = patch.read_integer()?;
         output.seek(io::SeekFrom::Start(source_position))?;
-        io::copy(
-          &mut output.take(source_len as u64),
-          &mut buffers.superstring,
-        )?;
+        io_utils::copy_exactly(source_len as u64, output, &mut buffers.superstring)?;
         output.seek(io::SeekFrom::End(0))?;
         source_len
       }
       _ => return Err(Error::BadPatch),
     };
 
-    let encoding_len: u32 = patch.read_vcdiff_int()?;
+    let encoding_len: u32 = patch.read_integer()?;
     let mut patch = patch.take(encoding_len as u64);
 
-    let target_window_len: u32 = patch.read_vcdiff_int()?;
+    let target_window_len: u32 = patch.read_integer()?;
     buffers
       .superstring
       .resize(buffers.superstring.len() + target_window_len as usize, 0);
@@ -126,19 +123,18 @@ where
       return Err(Error::BadPatch);
     }
 
-    let data_len: u32 = patch.read_vcdiff_int()?;
-    let instructions_len: u32 = patch.read_vcdiff_int()?;
-    let addresses_len: u32 = patch.read_vcdiff_int()?;
-    io::copy(
-      &mut (&mut patch).take(data_len as u64),
-      &mut buffers.add_and_run_data,
-    )?;
-    io::copy(
-      &mut (&mut patch).take(instructions_len as u64),
+    let data_len: u32 = patch.read_integer()?;
+    let instructions_len: u32 = patch.read_integer()?;
+    let addresses_len: u32 = patch.read_integer()?;
+    io_utils::copy_exactly(data_len as u64, &mut patch, &mut buffers.add_and_run_data)?;
+    io_utils::copy_exactly(
+      instructions_len as u64,
+      &mut patch,
       &mut buffers.instructions_and_sizes,
     )?;
-    io::copy(
-      &mut (&mut patch).take(addresses_len as u64),
+    io_utils::copy_exactly(
+      addresses_len as u64,
+      &mut patch,
       &mut buffers.copy_addresses,
     )?;
 
@@ -162,7 +158,7 @@ where
       Instruction::Noop => {}
       Instruction::Run => {
         let byte = cursors.add_and_run_data.read_u8()?;
-        let size: u32 = cursors.instructions_and_sizes.read_vcdiff_int()?;
+        let size: u32 = cursors.instructions_and_sizes.read_integer()?;
         (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
           io::copy(&mut io::repeat(byte).take(size as u64), &mut dest)
         })?;
@@ -170,10 +166,7 @@ where
       Instruction::Add { size } => {
         let size: u32 = cursors.read_instruction_size(size)?;
         (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
-          io::copy(
-            &mut (&mut cursors.add_and_run_data).take(size as u64),
-            &mut dest,
-          )
+          io_utils::copy_exactly(size as u64, &mut cursors.add_and_run_data, &mut dest)
         })?;
       }
       Instruction::Copy { size, mode } => {
@@ -183,12 +176,11 @@ where
         (cursors.superstring).write_bytes(size, |source: &[u8], mut dest: &mut [u8]| {
           let sequence_len = u32::min(address + size, source.len() as u32) as usize;
           let periodic_sequence: &[u8] = &source[address as usize..sequence_len];
-          loop {
-            dest.write(periodic_sequence)?;
-            if dest.is_empty() {
-              break;
-            }
-          }
+          io_utils::copy_exactly(
+            sequence_len as u64,
+            &mut io_utils::RepeatSlice::new(periodic_sequence),
+            &mut dest,
+          )?;
           Ok(())
         })?;
       }
@@ -202,7 +194,7 @@ where
 
   fn decode_instruction_pair(index: u8) -> (Instruction, Instruction) {
     use Instruction::*;
-    match (index) {
+    match index {
       0 => (Run, Noop),
       1..=18 => (Add { size: NonZeroU8::new(index - 1) }, Noop),
       19..=162 => {
@@ -292,7 +284,7 @@ impl<'a> Cursors<'a> {
   pub fn read_instruction_size(&mut self, encoded_size: Option<NonZeroU8>) -> io::Result<u32> {
     match encoded_size {
       Some(x) => Ok(x.get() as u32),
-      None => self.instructions_and_sizes.read_vcdiff_int::<u32>(),
+      None => self.instructions_and_sizes.read_integer::<u32>(),
     }
   }
 }
@@ -363,9 +355,11 @@ enum Instruction {
 impl Instruction {}
 
 trait VcdiffRead: Read {
-  /// Reads a big-endian varint. If the value overflows, returns an
-  /// [InvalidData](std::io::ErrorKind::InvalidData) error.
-  fn read_vcdiff_int<N>(&mut self) -> Result<N, io::Error>
+  /// Reads a big-endian varint.
+  ///
+  /// # Errors
+  /// If the value overflows, returns an [`InvalidData`](io_utils::ErrorKind::InvalidData) error.
+  fn read_integer<N>(&mut self) -> Result<N, io::Error>
   where
     N: Num + CheckedMul,
     u8: Into<N>,
@@ -406,15 +400,15 @@ impl<R: Read> AddressDecoder<R> {
     Self { cache: AddressCache::new(), addresses }
   }
 
-  pub fn decode(&mut self, here: u32, mode: u8) -> Result<u32, io::Error> {
+  pub fn decode(&mut self, here: u32, mode: u8) -> io::Result<u32> {
     const MAX_NEAR: u8 = 2 + cache::NearCache::SIZE;
     const MAX_HERE: u8 = MAX_NEAR + cache::SameCache::NUM_BUCKETS;
     let address: u32 = match mode {
-      0 => self.addresses.read_vcdiff_int()?,
+      0 => self.addresses.read_integer()?,
       1 => here
-        .checked_sub(self.addresses.read_vcdiff_int()?)
+        .checked_sub(self.addresses.read_integer()?)
         .ok_or(io::Error::from(io::ErrorKind::InvalidData))?,
-      2..MAX_NEAR => self.cache.near()[mode - 2] + self.addresses.read_vcdiff_int::<u32>()?,
+      2..MAX_NEAR => self.cache.near()[mode - 2] + self.addresses.read_integer::<u32>()?,
       MAX_NEAR..MAX_HERE => {
         let index: u16 = (mode - MAX_NEAR) as u16 * 256 + self.addresses.read_u8()? as u16;
         self.cache.same()[index]

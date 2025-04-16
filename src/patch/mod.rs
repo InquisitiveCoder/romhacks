@@ -1,35 +1,153 @@
+use crate::crc::{Crc32, HasCrc32};
 use crate::error::prelude::*;
-use crate::io::Resize;
-use crate::{crc, error, io};
-use std::io::{ErrorKind, Read, Seek, Write};
-use std::{fmt, path};
+use crate::io_utils::prelude::*;
+use crate::{crc, error, io_utils};
+use std::io;
+use std::io::prelude::*;
+use std::io::{Read, Seek, Write};
+use std::ops::Deref;
+use std::{fmt, num};
 
 pub mod bps;
+mod byuu;
 pub mod ips;
 pub mod ppf;
 pub mod ups;
-mod varint;
 pub mod vcd;
 
 pub use self::err::*;
 
+fn map_io_err(e: io::Error) -> io::Error {
+  match e.kind() {
+    io::ErrorKind::InvalidInput => io::ErrorKind::InvalidData.into(),
+    io::ErrorKind::UnexpectedEof => io::ErrorKind::InvalidData.into(),
+    _ => e,
+  }
+}
+
 #[derive(Clone, Debug)]
-pub struct Patch<P> {
-  pub kind: Kind,
-  pub file: P,
+pub struct Patch<R> {
+  file: R,
+  end_of_data: u64,
+  crc32: Crc32,
+  kind: Kind,
+}
+
+impl<P: Read + Seek> Patch<P> {
+  pub fn new(patch: P) -> io::Result<Self> {
+    let mut patch = io_utils::PositionTracker::from_start(patch);
+    let mut hasher = crc::Hasher::new();
+    let magic = patch.read_array::<3>()?;
+    let (kind, is_delta_file) = match &magic[..] {
+      ips::MAGIC => (Kind::IPS, false),
+      ups::MAGIC => (Kind::UPS, false),
+      bps::MAGIC => (Kind::BPS, true),
+      ppf::MAGIC => (Kind::PPF, false),
+      vcd::MAGIC => (Kind::VCD, true),
+      _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
+    };
+    hasher.write(&magic)?;
+    let (mut last_4, _) = io_utils::copy_all_but_last::<4>(&mut patch, &mut hasher)?;
+    let eof = patch.position();
+    let internal_crc32 = hasher.finish();
+    hasher.update(&mut last_4[..]);
+    let file_crc32 = hasher.finish();
+    Ok(Self {
+      file: patch.into_inner(),
+      kind,
+      end_of_data: eof,
+      is_delta_file,
+      internal_crc32,
+      file_crc32,
+    })
+  }
 }
 
 impl<P> Patch<P> {
-  pub fn new(kind: Kind, file: P) -> Self {
-    Self { kind, file }
+  pub fn kind(&self) -> Kind {
+    self.kind
+  }
+
+  pub fn file(&self) -> &P {
+    &self.file
+  }
+
+  pub fn internal_crc32(&self) -> Crc32 {
+    self.internal_crc32
+  }
+
+  pub fn crc32(&self) -> Crc32 {
+    self.file_crc32
+  }
+
+  pub fn is_delta_file(&self) -> bool {
+    self.is_delta_file
+  }
+
+  pub fn eof(&self) -> u64 {
+    self.end_of_data
+  }
+}
+
+impl<P> Deref for Patch<P> {
+  type Target = P;
+
+  fn deref(&self) -> &Self::Target {
+    &self.file
+  }
+}
+
+impl<R: Read> Read for Patch<R> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+    self.file.read(buf)
+  }
+}
+
+impl<R: BufRead> BufRead for Patch<R> {
+  fn fill_buf(&mut self) -> io::Result<&[u8]> {
+    self.file.fill_buf()
+  }
+
+  fn consume(&mut self, amt: usize) {
+    self.file.consume(amt)
+  }
+}
+
+impl<W: Write> Write for Patch<W> {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+    self.file.write(buf)
+  }
+
+  fn flush(&mut self) -> io::Result<()> {
+    self.file.flush()
+  }
+}
+
+impl<S: Seek> Seek for Patch<S> {
+  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+    self.file.seek(pos)
+  }
+}
+
+impl<T> HasInternalCrc32 for Patch<T> {
+  fn internal_crc32(&self) -> Crc32 {
+    self.internal_crc32
   }
 }
 
 #[derive(Copy, Clone, Debug)]
 pub enum Kind {
-  IPS,
-  UPS,
-  BPS,
+  IPS {
+    new_file_size: Option<num::NonZeroU32>,
+  },
+  UPS {
+    rom_crc32: Crc32,
+    result_crc32: Crc32,
+  },
+  BPS {
+    rom_crc32: Crc32,
+    result_crc32: Crc32,
+  },
   PPF,
   VCD,
 }
@@ -65,24 +183,16 @@ impl Patcher {
     Self(patch_kind)
   }
 
-  pub fn patch<R, P, O>(
-    &self,
-    rom: &mut R,
-    patch: &mut P,
-    output: &mut O,
-    rom_checksum: crc::Crc32,
-    patch_checksum: crc::Crc32,
-    patch_eof: u64,
-  ) -> Result<(), Error>
+  pub fn patch<R, P, O>(&self, rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), Error>
   where
-    R: Read + Seek,
-    P: Read + Seek,
+    R: Read + Seek + HasCrc32,
+    P: Read + Seek + HasInternalCrc32,
     O: Read + Write + Seek + Resize,
   {
     match self.0 {
       Kind::IPS => Patcher::ips(output, patch),
-      Kind::UPS => Patcher::ups(output, patch, rom_checksum, patch_checksum),
-      Kind::BPS => Patcher::bps(rom, patch, output, rom_checksum, patch_checksum, patch_eof),
+      Kind::UPS => Patcher::ups(rom, patch, output),
+      Kind::BPS => Patcher::bps(rom, patch, output),
       Kind::PPF => Patcher::ppf(output, patch),
       Kind::VCD => Patcher::vcdiff(rom, patch, output),
     }
@@ -97,58 +207,22 @@ impl Patcher {
     Ok(())
   }
 
-  fn ups<R, P>(
-    rom: &mut R,
-    patch: &mut P,
-    rom_checksum: crc::Crc32,
-    patch_checksum: crc::Crc32,
-  ) -> Result<(), crate::patch::Error>
+  fn ups<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), crate::patch::Error>
   where
-    R: Read + Write + Seek + Resize,
-    P: Read + Seek,
-  {
-    ups::patch(rom, patch, rom_checksum, patch_checksum)?;
-    Ok(())
-  }
-
-  fn bps<R, P, O>(
-    rom: &mut R,
-    patch: &mut P,
-    output: &mut O,
-    rom_checksum: crc::Crc32,
-    patch_checksum: crc::Crc32,
-    patch_eof: u64,
-  ) -> Result<(), crate::patch::err::Error>
-  where
-    R: Read + Seek,
-    P: Read + Seek,
+    R: Read + Seek + HasCrc32,
+    P: Read + Seek + HasInternalCrc32,
     O: Read + Write + Seek + Resize,
   {
-    // bps::patch(rom, patch, file_checksum, patch_checksum, patch_eof)?
-    let mut file_contents = vec![];
-    rom.seek(io::SeekFrom::Start(0))?;
-    io::copy(rom, &mut file_contents)?;
-    patch.seek(io::SeekFrom::Start(0))?;
-    let mut patch_contents = vec![];
-    io::copy(patch, &mut patch_contents)?;
-    let bps_output = ::flips::BpsPatch::new(patch_contents)
-      .apply(&file_contents)
-      .map_err(|err| {
-        use crate::patch::err::Error as P;
-        use ::flips::Error as F;
-        match err {
-          F::NotThis => P::WrongInputFile,
-          F::ToOutput => P::AlreadyPatched,
-          F::Invalid => P::BadPatch,
-          F::Scrambled => P::BadPatch,
-          F::Identical => unreachable!(),
-          F::TooBig => P::FileTooLarge,
-          F::OutOfMem => P::IO(io::Error::from(ErrorKind::OutOfMemory)),
-          F::Canceled => P::IO(io::Error::from(ErrorKind::Interrupted)),
-        }
-      })?;
-    io::copy(&mut bps_output.as_bytes(), output)?;
-    Ok(())
+    ups::patch(rom, patch, output)
+  }
+
+  fn bps<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), crate::patch::Error>
+  where
+    R: Read + Seek + HasCrc32,
+    P: Read + Seek + HasInternalCrc32,
+    O: Read + Write + Seek + Resize,
+  {
+    bps::patch(rom, patch, output)
   }
 
   fn ppf<R, P>(rom: &mut R, ppf: &mut P) -> Result<(), Error>
@@ -156,7 +230,7 @@ impl Patcher {
     R: Read + Write + Seek + Resize,
     P: Read + Seek,
   {
-    ppf::patch(rom, ppf).map_err(|err| err.into())
+    ppf::patch(ppf, rom).map_err(|err| err.into())
   }
 
   fn vcdiff<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), Error>
@@ -170,18 +244,10 @@ impl Patcher {
   }
 }
 
-pub struct Args<'f, 'p, F, P> {
-  pub file: &'f mut F,
-  pub patch: &'p mut P,
-  pub file_checksum: crc::Crc32,
-  pub patch_checksum: crc::Crc32,
-}
-
-type PatchFn<P> = fn(&path::Path, &Patch<P>) -> Result<(), Error>;
-
 mod err {
   use crate::error::prelude::*;
   use std::io;
+  use std::io::IntoInnerError;
 
   #[derive(Debug, Error)]
   #[error(transparent)]
@@ -200,23 +266,27 @@ mod err {
     AlreadyPatched,
   }
 
+  impl<W> From<IntoInnerError<W>> for Error {
+    fn from(into_inner_error: IntoInnerError<W>) -> Self {
+      Error::from(into_inner_error.into_error())
+    }
+  }
+
   impl From<io::Error> for Error {
     fn from(err: io::Error) -> Error {
+      use io::ErrorKind::*;
+      // These errors arise from violated expectations.
       match err.kind() {
-        io::ErrorKind::UnexpectedEof => Error::BadPatch,
-        io::ErrorKind::InvalidData => Error::BadPatch,
+        InvalidInput => Error::BadPatch,
+        InvalidData => Error::BadPatch,
+        UnexpectedEof => Error::BadPatch,
+        WriteZero => Error::BadPatch,
         _ => Error::IO(err),
       }
     }
   }
+}
 
-  impl From<flips::Error> for Error {
-    fn from(value: flips::Error) -> Self {
-      match value {
-        flips::Error::NotThis => Error::WrongInputFile,
-        flips::Error::ToOutput => Error::AlreadyPatched,
-        _ => Error::BadPatch,
-      }
-    }
-  }
+pub trait HasInternalCrc32 {
+  fn internal_crc32(&self) -> Crc32;
 }
