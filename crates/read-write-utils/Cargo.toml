@@ -1,0 +1,8 @@
+[package]
+name = "read-write-utils"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+checked-signed-diff = { path = "../checked-signed-diff" }
+fs-err = { version = "3.1.0", optional = true }

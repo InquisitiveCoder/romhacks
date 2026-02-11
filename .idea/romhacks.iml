@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/crates/checked-signed-diff/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/range-utils/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/read-write-utils/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher/src" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/checked-signed-diff/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/range-utils/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/read-write-utils/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/rompatcher/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
