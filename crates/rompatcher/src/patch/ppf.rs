@@ -25,6 +25,7 @@ pub fn patch(
   rom: &mut (impl BufRead + Seek),
   patch: &mut (impl BufRead + Seek),
   output: &mut impl BufWrite,
+  strict: bool,
 ) -> Result<(), patch::Error> {
   let mut patch = PositionTracker::from_start(patch);
   let Format {
@@ -69,21 +70,15 @@ pub fn patch(
     let rom_range = CheckedRange::new(initial_rom_position..offset).ok_or(BadPatch)?;
     match &block_check {
       None => {
-        rom
-          .take_from_inner_until(offset, |take| take.exactly(|rom| io::copy(rom, output)))
-          .map_err(rom_err)?;
+        rom.copy_until(offset, output).map_err(rom_err)?;
       }
       Some(BlockCheck { region, crc32 }) => {
         if !rom_range.overlaps(region) {
-          rom
-            .take_from_inner_until(offset, |take| take.exactly(|rom| io::copy(rom, output)))
-            .map_err(rom_err)?;
+          rom.copy_until(offset, output).map_err(rom_err)?;
         } else {
           // Copy until the start of the block check region.
           rom
-            .take_from_inner_until(cmp::max(region.start, initial_rom_position), |take| {
-              take.exactly(|rom| io::copy(rom, output))
-            })
+            .copy_until(cmp::max(region.start, initial_rom_position), output)
             .map_err(rom_err)?;
           // Hash and copy until the patch offset or the end of the block check
           // region, whichever comes first.
@@ -98,17 +93,15 @@ pub fn patch(
           // If we reached the end of the block check region first, copy from
           // the ROM until the patch offset is reached.
           rom
-            .take_from_inner_until(cmp::max(offset, rom.position()), |take| {
-              take.exactly(|rom| io::copy(rom, output))
-            })
+            .copy_until(cmp::max(offset, rom.position()), output)
             .map_err(rom_err)?;
         }
 
         // If we finished hashing the block check region on this iteration,
         // compare it to the block included in the patch.
         if (initial_rom_position..=rom.position()).contains(&region.end) {
-          let rom_block_crc32 = hasher.finish() as u32;
-          if rom_block_crc32 != *crc32 {
+          let rom_block_crc32 = hasher.finish();
+          if strict && rom_block_crc32 != u64::from(*crc32) {
             return Err(WrongInputFile);
           }
         }
@@ -117,16 +110,14 @@ pub fn patch(
 
     debug_assert_eq!(rom.position(), offset);
     patch
-      .take_from_inner(hunk_length.into(), |take| {
-        take.exactly(|patch| io::copy(patch, output))
-      })
+      .copy_exactly(u64::from(hunk_length), output)
       .map_err(patch_err)?;
 
     if has_undo_data {
       patch.seek_relative(hunk_length.into())?;
     }
 
-    if patch.fill_buf()?.is_empty() {
+    if patch.has_reached_eof()? {
       break; // EOF
     }
   }
@@ -135,7 +126,6 @@ pub fn patch(
     return Err(BadPatch);
   }
 
-  output.flush()?;
   Ok(())
 }
 
@@ -163,8 +153,8 @@ impl Format {
     // ignores the dedicated version byte. However, ROM Patcher JS checks both
     // and throws an error if they don't match. Given the latter's widespread
     // use, it's probably safe to follow its lead.
-    let version = Version::try_from(&patch.read_array::<5>()?)?;
-    if version != Version::try_from(patch.read_u8()?)? {
+    let version = Version::try_from(&patch.read_array::<5>().map_err(patch_err)?)?;
+    if version != Version::try_from(patch.read_u8().map_err(patch_err)?)? {
       return Err(BadPatch);
     }
 
@@ -423,7 +413,7 @@ impl TryFrom<u8> for Version {
       0 => Ok(Version::V1),
       1 => Ok(Version::V2),
       2 => Ok(Version::V3),
-      _ => Err(patch::Error::BadPatch),
+      _ => Err(BadPatch),
     }
   }
 }

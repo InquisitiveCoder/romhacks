@@ -79,14 +79,14 @@ where
 }
 
 impl<W: BufWrite, H: Hasher> BufWrite for HashingWriter<W, H> {
-  type Inner = W;
+  type Inner = W::Inner;
 
   fn get_ref(&self) -> &Self::Inner {
-    self.inner()
+    self.inner().get_ref()
   }
 
   fn get_mut(&mut self) -> &mut Self::Inner {
-    self.inner_mut()
+    self.inner_mut().get_mut()
   }
 }
 

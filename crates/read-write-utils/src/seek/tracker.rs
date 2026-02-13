@@ -116,6 +116,30 @@ impl<R: Read> PositionTracker<R> {
     Ok(num_copied)
   }
 
+  /// [`Copies`][1] exactly `amount` bytes from the inner reader of this
+  /// [`PositionTracker`] to `writer`.
+  ///
+  /// Equivalent to using [`self.take_from_inner`][2], [`TakeExt::exactly`] and
+  /// [`copy`].
+  ///
+  /// [1]: copy
+  /// [2]: Self::take_from_inner
+  pub fn copy_exactly(&mut self, amount: u64, writer: &mut impl Write) -> Result<u64> {
+    self.take_from_inner(amount, |take| take.exactly(|reader| copy(reader, writer)))
+  }
+
+  /// [`Copies`][1] bytes from the inner reader of this [`PositionTracker`] to
+  /// `writer` until the reader reaches `SeekFrom::Start(offset)`.
+  ///
+  /// Equivalent to using [`self.take_from_inner_until`][2],
+  /// [`TakeExt::exactly`] and [`copy`].
+  ///
+  /// [1]: copy
+  /// [2]: Self::take_from_inner
+  pub fn copy_until(&mut self, offset: u64, writer: &mut impl Write) -> Result<u64> {
+    self.take_from_inner_until(offset, |take| take.exactly(|reader| copy(reader, writer)))
+  }
+
   /// [`Copies`][1] exactly `amount` bytes from the inner reader and writer of
   /// both [`PositionTracker`]s.
   ///
@@ -131,6 +155,25 @@ impl<R: Read> PositionTracker<R> {
     writer: &mut PositionTracker<impl Write>,
   ) -> Result<u64> {
     self.take_from_inner(amount, |take| {
+      take.exactly(|reader| reader.copy_to_inner_of(writer))
+    })
+  }
+
+  /// [`Copies`][1] bytes from the inner reader and writer of both
+  /// [`PositionTracker`]s until the reader reaches `SeekFrom::Start(offset)`.
+  ///
+  /// Equivalent to using [`self.take_from_inner_until`][2],
+  /// [`TakeExt::exactly`] and [`reader.copy_to_inner_of(writer)`][3].
+  ///
+  /// [1]: copy
+  /// [2]: Self::take_from_inner
+  /// [3]: PositionTrackerReadExt::copy_to_inner_of
+  pub fn copy_to_other_until(
+    &mut self,
+    offset: u64,
+    writer: &mut PositionTracker<impl Write>,
+  ) -> Result<u64> {
+    self.take_from_inner_until(offset, |take| {
       take.exactly(|reader| reader.copy_to_inner_of(writer))
     })
   }

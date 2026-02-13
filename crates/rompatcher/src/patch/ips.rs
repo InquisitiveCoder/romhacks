@@ -1,12 +1,11 @@
+//! Documentation: https://zerosoft.zophar.net/ips.php
+
 use super::{patch_err, rom_err, Error};
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, BE};
 use read_write_utils::prelude::*;
 use std::io;
 use std::io::prelude::*;
-use std::io::Take;
 use std::num;
-
-// Documentation: https://zerosoft.zophar.net/ips.php
 
 pub const MAGIC: &[u8] = b"PAT";
 
@@ -41,9 +40,7 @@ pub fn patch(
 
     // Copy the input file as is until the next patch hunk.
     rom
-      .take_from_inner_until(offset.into(), |take| {
-        take.exactly(|rom| rom.copy_to_inner_of(&mut output))
-      })
+      .copy_to_other_until(offset.into(), &mut output)
       .map_err(rom_err)?;
 
     let encoded_hunk_size = patch.read_u16::<BE>().map_err(patch_err)?;
@@ -52,7 +49,7 @@ pub fn patch(
         // Patch contains the bytes to write verbatim.
         let hunk_size: u16 = hunk_size.get();
         patch
-          .copy_to_other_exactly(hunk_size as u64, &mut output)
+          .copy_to_other_exactly(u64::from(hunk_size), &mut output)
           .map_err(patch_err)?;
         i64::from(hunk_size)
       }
@@ -66,7 +63,7 @@ pub fn patch(
         };
         let mut data = patch
           .read_u8()
-          .map(|byte| io::repeat(byte).take(pattern_len.into()))
+          .map(|byte| io::repeat(byte).take(u64::from(pattern_len)))
           .map_err(patch_err)?;
         data.copy_to_inner_of(&mut output)?;
         i64::from(pattern_len)
@@ -84,7 +81,7 @@ pub fn patch(
   {
     None => {
       // No truncation necessary; copy the rest of the input file.
-      rom.copy_to_inner_of(&mut output)?;
+      rom.copy_to_other(&mut output)?;
     }
     Some(truncated_size) => {
       // The patch specifies a truncated size for the output file.
@@ -94,9 +91,7 @@ pub fn patch(
         return Err(Error::BadPatch);
       }
       rom
-        .take_from_inner_until(truncated_size, |take: &mut Take<_>| {
-          take.exactly(|rom| rom.copy_to_inner_of(&mut output))
-        })
+        .copy_to_other_until(truncated_size, &mut output)
         .map_err(rom_err)?;
     }
   };

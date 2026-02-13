@@ -1,12 +1,13 @@
-use crate::crc::{Crc32, HasCrc32};
+use crate::crc::{CRC32Hasher, Crc32, HasCrc32};
+use crate::error;
 use crate::error::prelude::*;
-use crate::{crc, error};
+use read_write_utils::hash::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
+use std::fmt;
 use std::io;
 use std::io::prelude::*;
-use std::io::{Read, Seek, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::Deref;
-use std::{fmt, num};
 
 pub mod bps;
 mod byuu;
@@ -17,21 +18,13 @@ pub mod vcd;
 
 pub use self::err::*;
 
-fn map_io_err(e: io::Error) -> io::Error {
-  match e.kind() {
-    io::ErrorKind::InvalidInput => io::ErrorKind::InvalidData.into(),
-    io::ErrorKind::UnexpectedEof => io::ErrorKind::InvalidData.into(),
-    _ => e,
-  }
-}
-
 fn rom_err(err: io::Error) -> Error {
   // InvalidInput will occur when a smaller file offset is encountered in a
   // patch format where input file offsets should only increase.
   // See PositionTracker::take_from_inner_until
   match err.kind() {
     io::ErrorKind::InvalidInput => Error::BadPatch,
-    io::ErrorKind::UnexpectedEof => Error::WrongInputFile,
+    io::ErrorKind::UnexpectedEof => Error::InputFileTooSmall,
     _ => Error::IO(err),
   }
 }
@@ -46,41 +39,39 @@ fn patch_err(err: io::Error) -> Error {
 }
 
 #[derive(Clone, Debug)]
-pub struct Patch<R> {
-  file: R,
-  end_of_data: u64,
-  crc32: Crc32,
+pub struct Patch<F> {
+  file: F,
   kind: Kind,
 }
 
-impl<P: Read + Seek> Patch<P> {
-  pub fn new(patch: P) -> io::Result<Self> {
-    let mut patch = PositionTracker::from_start(patch);
-    let mut hasher = crc::CRC32Hasher::new();
-    let magic = patch.read_array::<3>()?;
-    let (kind, is_delta_file) = match &magic[..] {
-      ips::MAGIC => (Kind::IPS, false),
-      ups::MAGIC => (Kind::UPS, false),
-      bps::MAGIC => (Kind::BPS, true),
-      ppf::MAGIC => (Kind::PPF, false),
-      vcd::MAGIC => (Kind::VCD, true),
+impl<F: Read + Seek> Patch<F> {
+  pub fn new(mut file: F) -> io::Result<Self> {
+    let magic = file.read_array::<3>()?;
+    file.seek(SeekFrom::Start(0))?;
+    let kind = match &magic[..] {
+      ips::MAGIC => Kind::IPS,
+      ups::MAGIC => Kind::UPS,
+      bps::MAGIC => Kind::BPS,
+      ppf::MAGIC => Kind::PPF,
+      vcd::MAGIC => Kind::VCD,
       _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
     };
-    hasher.write(&magic)?;
-    let (mut last_4, _) = read_write_utils::copy_all_but_last::<4>(&mut patch, &mut hasher)?;
-    let eof = patch.position();
-    let internal_crc32 = hasher.finish();
-    hasher.update(&mut last_4[..]);
-    let file_crc32 = hasher.finish();
-    Ok(Self {
-      file: patch.into_inner(),
-      kind,
-      end_of_data: eof,
-      is_delta_file,
-      internal_crc32,
-      file_crc32,
-    })
+    Ok(Self { file, kind })
   }
+}
+
+pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
+  let magic = file.read_array::<3>()?;
+  file.seek(SeekFrom::Start(0))?;
+  let kind = match &magic[..] {
+    ips::MAGIC => Kind::IPS,
+    ups::MAGIC => Kind::UPS,
+    bps::MAGIC => Kind::BPS,
+    ppf::MAGIC => Kind::PPF,
+    vcd::MAGIC => Kind::VCD,
+    _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
+  };
+  Ok(kind)
 }
 
 impl<P> Patch<P> {
@@ -90,22 +81,6 @@ impl<P> Patch<P> {
 
   pub fn file(&self) -> &P {
     &self.file
-  }
-
-  pub fn internal_crc32(&self) -> Crc32 {
-    self.internal_crc32
-  }
-
-  pub fn crc32(&self) -> Crc32 {
-    self.file_crc32
-  }
-
-  pub fn is_delta_file(&self) -> bool {
-    self.is_delta_file
-  }
-
-  pub fn eof(&self) -> u64 {
-    self.end_of_data
   }
 }
 
@@ -149,25 +124,11 @@ impl<S: Seek> Seek for Patch<S> {
   }
 }
 
-impl<T> HasInternalCrc32 for Patch<T> {
-  fn internal_crc32(&self) -> Crc32 {
-    self.internal_crc32
-  }
-}
-
 #[derive(Copy, Clone, Debug)]
 pub enum Kind {
-  IPS {
-    new_file_size: Option<num::NonZeroU32>,
-  },
-  UPS {
-    rom_crc32: Crc32,
-    result_crc32: Crc32,
-  },
-  BPS {
-    rom_crc32: Crc32,
-    result_crc32: Crc32,
-  },
+  IPS,
+  UPS,
+  BPS,
   PPF,
   VCD,
 }
@@ -175,9 +136,9 @@ pub enum Kind {
 impl fmt::Display for Kind {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Kind::IPS { .. } => write!(f, "IPS"),
-      Kind::UPS { .. } => write!(f, "UPS"),
-      Kind::BPS { .. } => write!(f, "BPS"),
+      Kind::IPS => write!(f, "IPS"),
+      Kind::UPS => write!(f, "UPS"),
+      Kind::BPS => write!(f, "BPS"),
       Kind::PPF => write!(f, "PPF"),
       Kind::VCD => write!(f, "Vcdiff (a.k.a. xdelta)"),
     }
@@ -209,30 +170,38 @@ impl Patcher {
     patch: &mut P,
     output: &mut O,
     strict: bool,
-  ) -> Result<(), Error>
+  ) -> Result<Checksums, Error>
   where
-    R: BufRead + Seek + HasCrc32,
-    P: BufRead + Seek + HasInternalCrc32,
+    R: BufRead + Seek,
+    P: BufRead + Seek,
     O: BufWrite + Seek,
     for<'a> &'a mut O::Inner: Read + Write + Seek,
   {
     match self.0 {
-      Kind::IPS { .. } => Patcher::ips(rom, patch, output),
-      Kind::UPS { .. } => Patcher::ups(rom, patch, output, strict),
-      Kind::BPS { .. } => Patcher::bps(rom, patch, output, strict),
-      Kind::PPF => Patcher::ppf(rom, patch, output),
+      Kind::IPS => Patcher::ips(rom, patch, output),
+      Kind::UPS => Patcher::ups(rom, patch, output, strict),
+      Kind::BPS => Patcher::bps(rom, patch, output, strict),
+      Kind::PPF => Patcher::ppf(rom, patch, output, strict),
       Kind::VCD => Patcher::vcdiff(rom, patch, output),
     }
   }
 
-  fn ips<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), Error>
+  fn ips<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<Checksums, Error>
   where
     R: BufRead + Seek,
     P: BufRead,
     O: BufWrite,
   {
-    ips::patch(rom, patch, output)?;
-    Ok(())
+    let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
+    let mut patch = HashingReader::new(patch, CRC32Hasher::new());
+    let mut output = HashingWriter::new(output, CRC32Hasher::new());
+    ips::patch(&mut rom, &mut patch, &mut output)?;
+    io::copy(&mut rom, &mut io::sink())?;
+    Ok(Checksums {
+      source_crc32: rom.hasher().finish().value(),
+      patch_crc32: patch.hasher().finish().value(),
+      target_crc32: output.hasher().finish().value(),
+    })
   }
 
   fn ups<R, P, O>(
@@ -240,14 +209,18 @@ impl Patcher {
     patch: &mut P,
     output: &mut O,
     strict: bool,
-  ) -> Result<(), crate::patch::Error>
+  ) -> Result<Checksums, crate::patch::Error>
   where
-    R: BufRead + Seek + HasCrc32,
-    P: BufRead + Seek + HasInternalCrc32,
-    O: BufWrite + Seek,
+    R: BufRead,
+    P: BufRead + Seek,
+    O: BufWrite,
     for<'a> &'a mut O::Inner: Read + Write + Seek,
   {
-    ups::patch(rom, patch, output, strict).map(|_| ())
+    ups::patch(rom, patch, output, strict).map(|report| Checksums {
+      source_crc32: report.actual_source_crc32.value(),
+      patch_crc32: report.patch_whole_file_crc32.value(),
+      target_crc32: report.actual_target_crc32.value(),
+    })
   }
 
   fn bps<R, P, O>(
@@ -255,36 +228,68 @@ impl Patcher {
     patch: &mut P,
     output: &mut O,
     strict: bool,
-  ) -> Result<(), crate::patch::Error>
-  where
-    R: BufRead + Seek + HasCrc32,
-    P: BufRead + Seek + HasInternalCrc32,
-    O: BufWrite + Seek,
-    for<'a> &'a mut O::Inner: Read + Write + Seek,
-  {
-    bps::patch(rom, patch, output, strict).map(|_| ())
-  }
-
-  fn ppf<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), Error>
-  where
-    R: BufRead + Write + Seek,
-    P: BufRead + Seek,
-    O: BufWrite + Seek,
-    for<'a> &'a mut O::Inner: Read + Write + Seek + Resize,
-  {
-    ppf::patch(rom, patch, output).map_err(|err| err.into())
-  }
-
-  fn vcdiff<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<(), Error>
+  ) -> Result<Checksums, crate::patch::Error>
   where
     R: BufRead + Seek,
     P: BufRead + Seek,
     O: BufWrite + Seek,
     for<'a> &'a mut O::Inner: Read + Write + Seek,
   {
-    vcd::patch(rom, patch, output)?;
-    Ok(())
+    bps::patch(rom, patch, output, strict).map(|report| Checksums {
+      source_crc32: report.actual_source_crc32.value(),
+      patch_crc32: report.patch_whole_file_crc32.value(),
+      target_crc32: report.actual_target_crc32.value(),
+    })
   }
+
+  fn ppf<R, P, O>(
+    rom: &mut R,
+    patch: &mut P,
+    output: &mut O,
+    strict: bool,
+  ) -> Result<Checksums, Error>
+  where
+    R: BufRead + Seek,
+    P: BufRead + Seek,
+    O: BufWrite,
+    for<'a> &'a mut O::Inner: Read + Write + Seek,
+  {
+    let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
+    let mut patch = HashingReader::new(patch, CRC32Hasher::new());
+    let mut output = HashingWriter::new(output, CRC32Hasher::new());
+    ppf::patch(&mut rom, &mut patch, &mut output, strict)?;
+    io::copy(&mut rom, &mut io::sink())?;
+    Ok(Checksums {
+      source_crc32: rom.hasher().finish().value(),
+      patch_crc32: patch.hasher().finish().value(),
+      target_crc32: output.hasher().finish().value(),
+    })
+  }
+
+  fn vcdiff<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<Checksums, Error>
+  where
+    R: BufRead + Seek,
+    P: BufRead + Seek,
+    O: BufWrite + Seek,
+    for<'a> &'a mut O::Inner: Read + Write + Seek,
+  {
+    let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
+    let mut patch = HashingReader::new(patch, CRC32Hasher::new());
+    let mut output = HashingWriter::new(output, CRC32Hasher::new());
+    vcd::patch(&mut rom, &mut patch, &mut output)?;
+    io::copy(&mut rom, &mut io::sink())?;
+    Ok(Checksums {
+      source_crc32: rom.hasher().finish().value(),
+      patch_crc32: patch.hasher().finish().value(),
+      target_crc32: output.hasher().finish().value(),
+    })
+  }
+}
+
+pub struct Checksums {
+  pub source_crc32: u32,
+  pub patch_crc32: u32,
+  pub target_crc32: u32,
 }
 
 mod err {
@@ -303,8 +308,12 @@ mod err {
     UnsupportedPatchFeature,
     #[error("The patch or ROM file is too large.")]
     FileTooLarge,
-    #[error("The patch is not intended for the input file.")]
+    #[error("The patch is not meant for this file.")]
     WrongInputFile,
+    #[error(
+      "The patch is not meant for this file, and can't be applied due to the file being too small."
+    )]
+    InputFileTooSmall,
     #[error("This patch has already been applied to the input file.")]
     AlreadyPatched,
   }

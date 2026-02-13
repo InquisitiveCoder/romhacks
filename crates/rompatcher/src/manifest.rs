@@ -25,13 +25,14 @@ const VERSION: &str = "version";
 
 pub fn get_or_create(
   manifest_path: &impl AsRef<path::Path>,
-  rom: &(impl HasPath + HasCrc32),
+  rom_path: &impl AsRef<path::Path>,
+  rom_crc32: crc::Crc32,
   patch_digest: crc::Crc32,
 ) -> Result<kdl::KdlDocument, GetOrCreateError> {
   monomorphic_get_or_create(
     manifest_path.as_ref(),
-    rom.path(),
-    rom.crc32(),
+    rom_path.as_ref(),
+    rom_crc32,
     patch_digest,
   )
 }

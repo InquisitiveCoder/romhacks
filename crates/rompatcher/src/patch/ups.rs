@@ -3,7 +3,7 @@
 use crate::crc::{CRC32Hasher, Crc32};
 use crate::patch::byuu::varint::ReadNumber;
 use crate::patch::byuu::*;
-use crate::patch::Error::{BadPatch, WrongInputFile};
+use crate::patch::Error::{AlreadyPatched, BadPatch, WrongInputFile};
 use crate::patch::{patch_err, rom_err, Error};
 use aligned_vec::{avec, AVec, CACHELINE_ALIGN};
 use byteorder::{LittleEndian, ReadBytesExt};
@@ -44,56 +44,47 @@ pub fn patch(
   let expected_source_size: u64 = patch.read_number().map_err(patch_err)?;
   let expected_target_size: u64 = patch.read_number().map_err(patch_err)?;
 
-  let mut output_buf = CacheAlignedBuf::new();
-  loop {
-    let relative_offset: u64 = patch.read_number().map_err(patch_err)?;
-    rom
-      .copy_to_other_exactly(relative_offset, &mut output)
-      .map_err(rom_err)?;
-    apply_hunk(&mut rom, &mut patch, &mut output, &mut output_buf)?;
-    match patch.position().cmp(&start_of_footer) {
-      Ordering::Less => continue,
-      Ordering::Equal => break, // reached the footer
-      Ordering::Greater => return Err(BadPatch),
-    }
-  }
+  let patch_result = apply_patch(
+    &mut rom,
+    &mut patch,
+    &mut output,
+    &start_of_footer,
+    expected_target_size,
+  );
 
-  rom
-    .take_from_inner_until(expected_target_size, |take| {
-      take.exactly(|rom| io::copy(rom, &mut output))
-    })
-    .map_err(|_| BadPatch)?;
+  // Check if the patch is valid before returning any errors from apply_patch.
+  // An InputFileTooSmall error is a false positive if the patch is corrupt.
+  patch.copy_until(start_of_footer, &mut io::sink())?;
+  let expected_source_crc32 = Crc32::new(patch.read_u32::<LittleEndian>().map_err(patch_err)?);
+  let expected_target_crc32 = Crc32::new(patch.read_u32::<LittleEndian>().map_err(patch_err)?);
+  let patch_internal_crc32 = patch.hasher().finish();
+  let expected_patch_crc32 = Crc32::new(patch.read_u32::<LittleEndian>().map_err(patch_err)?);
+  let patch_whole_file_crc32 = patch.hasher().finish();
+  if patch_internal_crc32 != expected_patch_crc32 {
+    return Err(BadPatch);
+  }
+  patch_result?;
+
+  // Patching succeeded.
 
   let actual_target_crc32 = output.hasher().finish();
-
-  // Validation
-
   let actual_target_size = output.position();
   if actual_target_size != expected_target_size {
     return Err(BadPatch);
   }
 
-  let expected_source_crc32 = Crc32::new(patch.read_u32::<LittleEndian>()?);
-  let expected_target_crc32 = Crc32::new(patch.read_u32::<LittleEndian>()?);
-  // The CRC32 of the patch up to the final 4 bytes.
-  let patch_internal_crc32 = patch.hasher().finish();
-  let expected_patch_crc32 = Crc32::new(patch.read_u32::<LittleEndian>()?);
-  // The CRC32 of the entire patch file.
-  let patch_whole_file_crc32 = patch.hasher().finish();
-
-  if patch_internal_crc32 != expected_patch_crc32 {
-    return Err(BadPatch);
-  }
-
-  // Read and hash the rest of the file. Note that HashingReader::seek will
-  // not hash any skipped file contents.
-  io::copy(&mut rom, &mut io::sink())?;
+  // Read and hash the rest of the file.
+  rom.copy_to(&mut io::sink())?;
   let actual_source_crc32 = rom.hasher().finish();
   let actual_source_size = rom.position();
 
   if strict {
     if actual_source_crc32 != expected_source_crc32 || actual_source_size != expected_source_size {
-      return Err(WrongInputFile);
+      return if actual_source_crc32 == expected_target_crc32 {
+        Err(AlreadyPatched)
+      } else {
+        Err(WrongInputFile)
+      };
     }
 
     if actual_target_crc32 != expected_target_crc32 {
@@ -117,6 +108,34 @@ pub fn patch(
     expected_target_size,
     actual_target_size,
   })
+}
+
+fn apply_patch(
+  mut rom: &mut PositionTracker<HashingReader<&mut impl BufRead, CRC32Hasher>>,
+  mut patch: &mut PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>,
+  mut output: &mut PositionTracker<HashingWriter<&mut impl BufWrite, CRC32Hasher>>,
+  start_of_footer: &u64,
+  expected_target_size: u64,
+) -> Result<(), Error> {
+  let mut output_buf = CacheAlignedBuf::new();
+  loop {
+    let relative_offset: u64 = patch.read_number().map_err(patch_err)?;
+    rom
+      .copy_to_other_exactly(relative_offset, &mut output)
+      .map_err(rom_err)?;
+    apply_hunk(&mut rom, &mut patch, &mut output, &mut output_buf)?;
+    match patch.position().cmp(&start_of_footer) {
+      Ordering::Less => continue,
+      Ordering::Equal => break, // reached the footer
+      Ordering::Greater => return Err(BadPatch),
+    }
+  }
+
+  rom
+    .copy_to_other_until(expected_target_size, &mut output)
+    .map_err(patch_err)?;
+
+  Ok(())
 }
 
 fn apply_hunk(

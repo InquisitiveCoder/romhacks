@@ -1,10 +1,12 @@
 use crate::crc::*;
 use crate::error::prelude::*;
-use crate::patch::{bps, ips, ppf, ups, vcd};
+use crate::fs::HasPath;
+use crate::patch::{bps, find_patch_kind, ips, ppf, ups, vcd};
 use crate::{filename, hack, manifest, patch};
 use fs_err as fs;
 use std::io;
 use std::io::prelude::*;
+use std::io::{BufReader, BufWriter};
 use std::{ffi, path};
 use ulid::Ulid;
 
@@ -22,11 +24,33 @@ pub struct Args {
 
 impl Args {
   pub fn call(self) -> Result<(), Error> {
-    let mut rom = WithCrc32::new(fs::File::open(&self.rom)?)?;
-    rom.seek(io::SeekFrom::Start(0))?;
-    let mut patch = patch::Patch::new(fs::File::open(&self.patch)?)?;
-    assert!(patch.eof() <= i64::MAX as u64);
-    patch.seek(io::SeekFrom::Start(0))?;
+    let rom = fs::File::open(&self.rom)?;
+    let mut patch = fs::File::open(&self.patch)?;
+    let temp_file_name = {
+      let mut file_name = Ulid::new().to_string();
+      file_name.push_str(".tmp");
+      file_name
+    };
+    let temp_file: fs::File = fs::OpenOptions::new()
+      .create_new(true)
+      .read(true)
+      .write(true)
+      .open(temp_file_name.as_str())?;
+
+    let patch_kind = find_patch_kind(&mut patch)?;
+    let patcher = patch::Patcher::from_patch_kind(patch_kind);
+
+    let mut rom = BufReader::new(rom);
+    let mut patch = BufReader::new(patch);
+    let mut temp_file = BufWriter::new(temp_file);
+    let checksums = match patcher.patch(&mut rom, &mut patch, &mut temp_file, true) {
+      Ok(checksums) => checksums,
+      Err(e) => {
+        drop(temp_file);
+        let _ = fs::remove_file(temp_file_name.as_str());
+        return Err(e)?;
+      }
+    };
 
     let game_name: ffi::OsString = ffi::OsString::from(filename::infer_game_name(&rom.path()));
     let manifest_path: ffi::OsString = {
@@ -34,36 +58,15 @@ impl Args {
       buf.push(" (patched).romhacks.kdl");
       buf
     };
-    let mut doc = manifest::get_or_create(&manifest_path, &rom, patch.crc32())?;
-
-    let mut temp_file: fs::File = {
-      let mut file_name = Ulid::new().to_string();
-      file_name.push_str(".tmp");
-      fs::OpenOptions::new()
-        .create_new(true)
-        .read(true)
-        .write(true)
-        .open(file_name)?
-    };
-
-    if !patch.is_delta_file() {
-      // Some formats modify the file to be patched in place,
-      // rather than build up the result from scratch.
-      io::copy(&mut rom, &mut temp_file)?;
-    };
-
-    let patcher = patch::Patcher::from_patch_kind(patch.kind());
-    if let Err(e) = patcher.patch(&mut rom, &mut patch, &mut temp_file) {
-      let (file, path) = temp_file.into_parts();
-      drop(file);
-      let _ = fs::remove_file(path);
-      return Err(e)?;
-    }
+    let mut doc = manifest::get_or_create(
+      &manifest_path,
+      &rom.path(),
+      Crc32::new(checksums.source_crc32),
+      Crc32::new(checksums.patch_crc32),
+    )?;
 
     log::info!("ROM patched successfully.");
 
-    temp_file.seek(io::SeekFrom::Start(0))?;
-    let (patched_digest, _) = CRC32Hasher::new().hash(&mut temp_file)?;
     let patched_file_name: ffi::OsString = {
       let mut buf = ffi::OsString::from(&game_name);
       buf.push(" (patched)");
@@ -77,15 +80,14 @@ impl Args {
       &self.rom,
       &self.patch,
       self.hack,
-      rom.crc32(),
-      patch.internal_crc32(),
-      patched_digest,
+      Crc32::new(checksums.source_crc32),
+      Crc32::new(checksums.patch_crc32),
+      Crc32::new(checksums.target_crc32),
     );
     let manifest_string: String = doc.to_string();
     fs::write(&manifest_path, &manifest_string)?;
     println!("{manifest_string}");
 
-    let (temp_file, temp_file_name) = temp_file.into_parts();
     drop(temp_file); // close the file prior to renaming
     fs::rename(&temp_file_name, &patched_file_name)?;
 
