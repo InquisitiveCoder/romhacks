@@ -1,9 +1,10 @@
 use crate::crc::*;
 use crate::error::prelude::*;
 use crate::fs::HasPath;
-use crate::patch::{bps, find_patch_kind, ips, ppf, ups, vcd};
+use crate::patch::find_patch_kind;
 use crate::{filename, hack, manifest, patch};
 use fs_err as fs;
+use read_write_utils::DEFAULT_BUF_SIZE;
 use std::io;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};
@@ -18,8 +19,6 @@ pub struct Args {
   pub patch: path::PathBuf,
   #[command(flatten)]
   pub hack: hack::RomHack,
-  #[arg(short, long)]
-  pub no_backup: bool,
 }
 
 impl Args {
@@ -42,7 +41,7 @@ impl Args {
 
     let mut rom = BufReader::new(rom);
     let mut patch = BufReader::new(patch);
-    let mut temp_file = BufWriter::new(temp_file);
+    let mut temp_file = BufWriter::with_capacity(DEFAULT_BUF_SIZE * 3 / 2, temp_file);
     let checksums = match patcher.patch(&mut rom, &mut patch, &mut temp_file, true) {
       Ok(checksums) => checksums,
       Err(e) => {
@@ -71,6 +70,7 @@ impl Args {
       let mut buf = ffi::OsString::from(&game_name);
       buf.push(" (patched)");
       if let Some(ext) = rom.path().extension() {
+        buf.push(".");
         buf.push(ext);
       }
       buf
@@ -88,6 +88,7 @@ impl Args {
     fs::write(&manifest_path, &manifest_string)?;
     println!("{manifest_string}");
 
+    temp_file.flush()?;
     drop(temp_file); // close the file prior to renaming
     fs::rename(&temp_file_name, &patched_file_name)?;
 

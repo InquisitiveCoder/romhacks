@@ -20,11 +20,11 @@ const HAS_APPHEADER: u8 = 4;
 pub fn patch<O>(
   rom: &mut (impl BufRead + Seek),
   patch: &mut (impl BufRead + Seek),
-  output: &mut O
+  output: &mut O,
 ) -> Result<(), Error>
 where
   O: BufWrite + Seek,
-  for<'a> &'a mut O::Inner: Read + Write + Seek
+  for<'a> &'a mut O::Inner: Read + Write + Seek,
 {
   let mut rom = PositionTracker::from_start(rom);
   let mut patch = PositionTracker::from_start(patch);
@@ -74,7 +74,7 @@ where
   R: BufRead + Seek,
   P: BufRead,
   O: BufWrite + Seek,
-  for<'a> &'a mut O::Inner: Read + Write + Seek
+  for<'a> &'a mut O::Inner: Read + Write + Seek,
 {
   pub const VCD_SOURCE: u8 = 0x01;
   pub const VCD_TARGET: u8 = 0x02;
@@ -82,7 +82,7 @@ where
   pub fn new(
     rom: PositionTracker<R>,
     patch: PositionTracker<P>,
-    output: PositionTracker<O>
+    output: PositionTracker<O>,
   ) -> Self {
     Self {
       files: Files { rom, patch, output },
@@ -111,12 +111,17 @@ where
         let source_len: u32 = patch.read_integer().map_err(patch_err)?;
         let source_position: u64 = patch.read_integer().map_err(patch_err)?;
         output.seek(SeekFrom::Start(source_position))?;
-        output.with_inner(|inner| inner.get_mut(), |output| {
-          output
-            .take(source_len as u64)
-            .exactly(|output| io::copy(output, &mut buffers.superstring))?;
-          output.seek(SeekFrom::End(0))
-        }).map_err(patch_err)?;
+        output
+          .with_inner_mut(
+            |inner| inner.inner_mut(),
+            |output| {
+              output
+                .take(source_len as u64)
+                .exactly(|output| io::copy(output, &mut buffers.superstring))?;
+              output.seek(SeekFrom::End(0))
+            },
+          )
+          .map_err(patch_err)?;
         source_len
       }
       _ => return Err(Error::BadPatch),
@@ -158,7 +163,10 @@ where
 
     let mut cursors = Cursors::new(buffers, source_window_len);
     loop {
-      let instruction_code = cursors.instructions_and_sizes.read_u8().map_err(patch_err)?;
+      let instruction_code = cursors
+        .instructions_and_sizes
+        .read_u8()
+        .map_err(patch_err)?;
       let (first, second) = Self::decode_instruction_pair(instruction_code);
       Self::execute_instruction(&mut cursors, first)?;
       Self::execute_instruction(&mut cursors, second)?;
@@ -176,7 +184,10 @@ where
       Instruction::Noop => {}
       Instruction::Run => {
         let byte = cursors.add_and_run_data.read_u8().map_err(patch_err)?;
-        let size: u32 = cursors.instructions_and_sizes.read_integer().map_err(patch_err)?;
+        let size: u32 = cursors
+          .instructions_and_sizes
+          .read_integer()
+          .map_err(patch_err)?;
         (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
           io::copy(&mut io::repeat(byte).take(size as u64), &mut dest)
         })?;
@@ -192,7 +203,10 @@ where
       Instruction::Copy { size, mode } => {
         let size: u32 = cursors.read_instruction_size(size).map_err(patch_err)?;
         let here: u32 = cursors.superstring.target_window_position();
-        let address = cursors.copy_addresses.decode(here, mode).map_err(patch_err)?;
+        let address = cursors
+          .copy_addresses
+          .decode(here, mode)
+          .map_err(patch_err)?;
         (cursors.superstring).write_bytes(size, |source: &[u8], mut dest: &mut [u8]| {
           let sequence_len = u32::min(address + size, source.len() as u32) as usize;
           let periodic_sequence: &[u8] = &source[address as usize..sequence_len];

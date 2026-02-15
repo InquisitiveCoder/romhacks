@@ -10,7 +10,6 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use ::rayon::prelude::*;
 use read_write_utils::hash::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
-use read_write_utils::DEFAULT_BUF_SIZE;
 use std::cmp::Ordering;
 use std::io::prelude::*;
 use std::io::ErrorKind::Interrupted;
@@ -160,18 +159,25 @@ fn apply_hunk(
     // The memchr crate uses SIMD to efficiently find the first occurrence of
     // a specified byte in a slice. We take advantage of this to find the NUL
     // byte that terminates the current hunk.
-    let (data_len, is_end_of_hunk) = ::memchr::memchr(0, patch_buf)
-      .map(|i| (i, true))
-      .unwrap_or_else(|| (patch_buf.len(), false));
+    let (patch_buf, is_end_of_hunk) = ::memchr::memchr(0, patch_buf)
+      .map(|i| (&patch_buf[..i], true))
+      .unwrap_or_else(|| (patch_buf, false));
 
-    output_buf.resize(data_len);
-    rom.chain(io::repeat(0)).copy_to_slice(output_buf)?;
-    let (patch_hunk, rom_hunk) = (&patch_buf[..data_len], &mut output_buf[..]);
-    xor_hunks(patch_hunk, rom_hunk);
-    output.write_all(rom_hunk)?;
+    let output_buf: &mut [u8] = {
+      output_buf.resize(patch_buf.len());
+      rom
+        .chain(io::repeat(0))
+        .copy_to_slice(&mut output_buf[..])?;
+      &mut output_buf[..]
+    };
+
+    xor_hunks(patch_buf, output_buf);
+    output.write_all(output_buf)?;
 
     // If the delimiter was found, add 1 so it gets consumed too.
-    patch.consume(data_len + 1 * (is_end_of_hunk as usize));
+    let read_amt = patch_buf.len() + usize::from(is_end_of_hunk);
+    patch.consume(read_amt);
+
     if is_end_of_hunk {
       break;
     }
@@ -179,41 +185,43 @@ fn apply_hunk(
   Ok(())
 }
 
-/// Uses rayon to XOR the `patch_hunk` and `rom_hunk` in parallel.
+/// Uses [`rayon`] to XOR `patch_hunk` and `rom_hunk` in parallel.
 /// `rom_hunk` should be aligned to the cache line size to prevent false sharing.
-fn xor_hunks(patch_hunk: &[u8], rom_hunk: &mut [u8]) {
-  debug_assert_eq!(patch_hunk.len(), rom_hunk.len());
+fn xor_hunks(patch_hunk: &[u8], output_hunk: &mut [u8]) {
+  debug_assert_eq!(patch_hunk.len(), output_hunk.len());
   patch_hunk
     .par_chunks(CACHELINE_ALIGN)
-    .zip(rom_hunk.par_chunks_mut(CACHELINE_ALIGN))
+    .zip(output_hunk.par_chunks_mut(CACHELINE_ALIGN))
     .for_each(xor_cache_line);
 }
 
 /// Uses SIMD to XOR two equal-length slices together.
-fn xor_cache_line((patch_cache_line, rom_cache_line): (&[u8], &mut [u8])) {
-  debug_assert_eq!(patch_cache_line.len(), rom_cache_line.len());
+fn xor_cache_line((patch_cache_line, output_cache_line): (&[u8], &mut [u8])) {
+  debug_assert_eq!(patch_cache_line.len(), output_cache_line.len());
   iter::zip(
     patch_cache_line.chunks(SIMD_SIZE),
-    rom_cache_line.chunks_mut(SIMD_SIZE),
+    output_cache_line.chunks_mut(SIMD_SIZE),
   )
   .for_each(xor_simd);
 }
 
-fn xor_simd((patch_chunk, rom_chunk): (&[u8], &mut [u8])) {
+fn xor_simd((patch_chunk, output_chunk): (&[u8], &mut [u8])) {
+  debug_assert_eq!(patch_chunk.len(), output_chunk.len());
   fn to_simd(chunk: &[u8]) -> u8x16 {
     let mut buffer = [0u8; SIMD_SIZE];
     buffer[..chunk.len()].copy_from_slice(chunk);
     u8x16::new(buffer)
   }
-  let result = (to_simd(patch_chunk) ^ to_simd(rom_chunk)).to_array();
-  rom_chunk.copy_from_slice(&result[..rom_chunk.len()]);
+  let result: [u8; 16] = (to_simd(patch_chunk) ^ to_simd(output_chunk)).to_array();
+  let result: &[u8] = &result[..output_chunk.len()];
+  output_chunk.copy_from_slice(result);
 }
 
 struct CacheAlignedBuf(AVec<u8>);
 
 impl CacheAlignedBuf {
   pub fn new() -> Self {
-    Self(avec![0u8; DEFAULT_BUF_SIZE])
+    Self(avec![])
   }
 
   /// Follows the same semantics as [`Vec::resize`].

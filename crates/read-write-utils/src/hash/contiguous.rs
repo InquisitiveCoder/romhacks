@@ -1,4 +1,5 @@
 use super::*;
+use crate::seek::PositionTracker;
 use std::io::ErrorKind::InvalidInput;
 
 /// A [`Read`] adapter that hashes every byte up to its underlying reader's
@@ -43,7 +44,7 @@ impl<R, H> MonotonicHashingReader<R, H> {
   }
 
   pub fn hasher(&self) -> &H {
-    self.hasher.get_ref().hasher()
+    self.hasher.inner().hasher()
   }
 
   pub fn position(&self) -> u64 {
@@ -109,7 +110,7 @@ impl<R: BufRead + Seek, H: Hasher> Seek for MonotonicHashingReader<R, H> {
           .map(|x| std::cmp::min(x, buf.len() as u64))
           .and_then(|x| usize::try_from(x).ok())
         {
-          debug_assert!(0 <= safe_read_len && safe_read_len <= buf.len());
+          debug_assert!(safe_read_len <= buf.len());
           let _ = self.hasher.write_all(&buf[..safe_read_len]);
           self.inner.consume(safe_read_len);
         }
@@ -140,11 +141,11 @@ impl<W: Write, H> Write for MonotonicHashingReader<W, H> {
 impl<W: BufWrite, H> BufWrite for MonotonicHashingReader<W, H> {
   type Inner = PositionTracker<W>;
 
-  fn get_ref(&self) -> &Self::Inner {
+  fn inner(&self) -> &Self::Inner {
     &self.inner
   }
 
-  fn get_mut(&mut self) -> &mut Self::Inner {
+  fn inner_mut(&mut self) -> &mut Self::Inner {
     &mut self.inner
   }
 }
@@ -171,28 +172,25 @@ where
       .and_then(|hashed_len| data.split_at_checked(hashed_len))
       .map(|(_hashed, unhashed)| unhashed)
       .unwrap_or(&[]);
-    // Writing to the hasher is infallible.
-    let _ = self.hasher.write(unhashed_data);
+    self.hasher.write(unhashed_data)?;
     Ok(data.len())
   }
 
-  fn seek_and_hash_to(&mut self, new_position: u64) -> io::Result<()> {
+  fn seek_and_hash_to(&mut self, position: u64) -> io::Result<()> {
     let hasher_position = self.hasher.position();
-    if new_position <= hasher_position {
+    if position <= hasher_position {
       // Seeking to a position that's already been hashed, nothing to do but
-      // seek.rs the inner stream.
-      self
-        .inner
-        .seek(io::SeekFrom::Start(new_position))
-        .map(|_| ())
+      // seek the inner stream.
+      self.inner.seek_from_start(position)?;
     } else {
       // Seeking to unhashed data.
       // Seek to the furthest hashed position, then read and hash until the
       // new position is reached.
-      self.inner.seek(io::SeekFrom::Start(hasher_position))?;
-      self.inner.take_from_inner_until(new_position, |inner| {
-        io::copy(inner, &mut self.hasher).map(|_| ())
-      })
+      self.inner.seek_from_start(hasher_position)?;
+      self
+        .inner
+        .take_from_inner_until(position, |inner| inner.copy_to_inner_of(&mut self.hasher))?;
     }
+    Ok(())
   }
 }

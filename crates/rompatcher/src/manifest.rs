@@ -1,6 +1,4 @@
-use crate::crc::HasCrc32;
 use crate::error::prelude::*;
-use crate::fs::HasPath;
 use crate::kdl::prelude::*;
 use crate::{crc, hack, kdl, mem};
 use fs_err as fs;

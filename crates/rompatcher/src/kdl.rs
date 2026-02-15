@@ -92,13 +92,16 @@ impl ValueRepr for crc::Crc32 {
 
 impl From<crc::Crc32> for KdlValue {
   fn from(crc32: crc::Crc32) -> Self {
-    KdlValue::Integer(crc32.value().into())
+    KdlValue::String(format!("{:X}", crc32.value()))
   }
 }
 
 impl PartialEq<KdlValue> for crc::Crc32 {
   fn eq(&self, other: &KdlValue) -> bool {
-    Some(self.value() as i128) == other.as_integer()
+    Some(self.value())
+      == other
+        .as_string()
+        .and_then(|str| u32::from_str_radix(str, 16).ok())
   }
 }
 

@@ -47,13 +47,11 @@ impl Read for RepeatSlice<'_> {
     }
 
     loop {
-      self.cursor.read(buf)?;
+      let read = self.cursor.read(buf)?;
       if self.cursor.position() == self.slice().len() as u64 {
         self.cursor.set_position(0);
       }
-      if buf.is_empty() {
-        return Ok(buf.len());
-      }
+      return Ok(read);
     }
   }
 }

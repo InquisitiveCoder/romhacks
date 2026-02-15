@@ -1,6 +1,7 @@
 //! Documentation: https://zerosoft.zophar.net/ips.php
 
 use super::{patch_err, rom_err, Error};
+use crate::patch::Error::BadPatch;
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, BE};
 use read_write_utils::prelude::*;
 use std::io;
@@ -29,7 +30,7 @@ pub fn patch(
   let mut output = PositionTracker::from_start(output);
 
   if &patch.read_array::<5>().map_err(patch_err)? != b"PATCH" {
-    return Err(Error::BadPatch);
+    return Err(BadPatch);
   }
 
   loop {
@@ -57,9 +58,7 @@ pub fn patch(
         // The patch contains a 1 byte repeating sequence.
         let pattern_len: u16 = {
           let pattern_len = patch.read_u16::<BE>().map_err(patch_err)?;
-          num::NonZeroU16::new(pattern_len)
-            .ok_or(Error::BadPatch)?
-            .get()
+          num::NonZeroU16::new(pattern_len).ok_or(BadPatch)?.get()
         };
         let mut data = patch
           .read_u8()
@@ -71,7 +70,7 @@ pub fn patch(
     };
 
     // Skip over the patched bytes in the input file.
-    rom.seek_relative(hunk_size)?;
+    rom.seek_relative_accurate(hunk_size)?;
   }
 
   match patch
@@ -81,6 +80,12 @@ pub fn patch(
   {
     None => {
       // No truncation necessary; copy the rest of the input file.
+      if output.position() == 0 {
+        // If nothing was written to the output, the patch must be bad.
+        // This isn't necessarily the case in the other branch of the match;
+        // a patch that only truncates the file could be valid.
+        return Err(BadPatch);
+      }
       rom.copy_to_other(&mut output)?;
     }
     Some(truncated_size) => {
@@ -88,7 +93,7 @@ pub fn patch(
       // The new EOF should be further than the last change in the patch,
       // and the patch must now be at EOF.
       if truncated_size < output.position() || !patch.has_reached_eof()? {
-        return Err(Error::BadPatch);
+        return Err(BadPatch);
       }
       rom
         .copy_to_other_until(truncated_size, &mut output)

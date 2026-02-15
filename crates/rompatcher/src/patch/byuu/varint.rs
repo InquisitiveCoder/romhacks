@@ -12,12 +12,12 @@ pub trait ReadNumber: Read {
   /// # Errors
   /// If the value overflows, this function returns an
   /// [InvalidData](io::ErrorKind::InvalidData) error.
-  fn read_number(&mut self) -> Result<u64, io::Error> {
+  fn read_number(&mut self) -> io::Result<u64> {
     let mut data: u64 = 0;
     let mut shift = Checked::<u64>::new(1);
     loop {
       let byte = self.read_u8()?;
-      let new_value: u64 = ((byte as u64 & 0x7F) * shift + data) //
+      let new_value: u64 = ((u64::from(byte) & 0x7F) * shift + data) //
         .ok_or_else(overflow_err)?;
       if is_msb_set(byte) {
         return Ok(new_value);

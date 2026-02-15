@@ -3,31 +3,81 @@ use crate::DEFAULT_BUF_SIZE;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::io;
+use std::io::prelude::*;
 use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
-use std::io::{
-  copy, BufRead, BufReader, BufWriter, Cursor, Empty, Error, Read, Seek, Sink, StderrLock,
-  StdoutLock, Take, Write,
-};
+use std::io::{copy, BufWriter, Cursor, Empty, Error, Sink, StderrLock, StdoutLock, Take};
 
 pub trait ReadExt: Read {
-  /// Equivalent to [`BufReader::new(self)`].
-  fn buffer_reads(self) -> BufReader<Self>
-  where
-    Self: Sized,
-  {
-    BufReader::new(self)
-  }
-
-  /// Calls [`Self::read`] repeatedly until `slice` is full or EOF is reached.
+  /// Calls [`read`][1] repeatedly until `slice` is full or EOF is reached.
   ///
   /// This is equivalent to using [`take`](Self::take) and [`copy`], but the
-  /// latter may allocate a redundant buffer if `Self`'s type isn't capable of
+  /// latter may allocate a redundant buffer if `self`'s type isn't capable of
   /// serving as a buffer for `copy`.
   ///
   /// # Errors
   /// Like [`copy`], if `read` fails due to an [`Interrupted`] error, this
   /// function will retry the operation. If `read` returns any other error kind,
   /// this function returns it immediately.
+  ///
+  /// # Examples
+  /// The code below demonstrates the function's behavior when there isn't
+  /// enough data in the reader to fill the buffer.
+  /// ```
+  /// use std::io::prelude::*;
+  /// use std::io::{BufReader, Cursor};
+  /// use read_write_utils::prelude::*;
+  ///
+  /// let mut vec_cursor = Cursor::new(vec![2u8, 3, 5, 7, 11]);
+  /// let mut buffer = [13u8; 6];
+  ///
+  /// let bytes_copied = vec_cursor.copy_to_slice(&mut buffer[..]);
+  ///
+  /// // The return value is the number of bytes in the vector.
+  /// assert_eq!(
+  ///    bytes_copied.unwrap() as usize,
+  ///    vec_cursor.get_ref().len()
+  /// );
+  ///
+  /// // The first 5 indexes of the buffer have been overwritten,
+  /// assert_eq!(&buffer[..], &[2, 3, 5, 7, 11, 13]);
+  ///
+  /// // The cursor is at the end of the vector.
+  /// assert_eq!(
+  ///    vec_cursor.position() as usize,
+  ///    vec_cursor.get_ref().len()
+  /// );
+  /// ```
+  ///
+  /// The code below demonstrates filling a buffer.
+  /// ```
+  /// use std::io::prelude::*;
+  /// use std::io::{BufReader, Cursor};
+  /// use read_write_utils::prelude::*;
+  ///
+  /// // Because the vector is larger than the BufReader's capacity,
+  /// // multiple reads will be required to copy the vector.
+  /// let mut vec_cursor = Cursor::new(vec![2u8, 3, 5]);
+  /// let mut buffer = [0u8; 2];
+  ///
+  /// let bytes_copied = vec_cursor.copy_to_slice(&mut buffer[..]);
+  ///
+  /// // The return value is the size of the buffer.
+  /// assert_eq!(
+  ///    bytes_copied.unwrap() as usize,
+  ///    buffer.len()
+  /// );
+  ///
+  /// // The buffer matches the first two bytes of the vector.
+  /// assert_eq!(&buffer[..], &(vec_cursor.get_ref())[..buffer.len()]);
+  ///
+  /// // The cursor position matches the length of the buffer.
+  /// assert_eq!(
+  ///    vec_cursor.position() as usize,
+  ///    buffer.len()
+  /// );
+  /// ```
+  ///
+  /// [1]: Read::read
   fn copy_to_slice(&mut self, mut slice: &mut [u8]) -> io::Result<u64> {
     let mut total: u64 = 0;
     loop {
@@ -43,10 +93,29 @@ pub trait ReadExt: Read {
     }
   }
 
-  /// Uses [`Self::copy_to_slice`] to fill and return an array.
+  /// Uses [`copy_to_slice`][1] to fill and return an array of length `N`.
   ///
   /// # Errors
-  /// Returns [`UnexpectedEof`] if the array couldn't be filled.
+  /// In addition to any errors returned by [`copy_to_slice`][1], this function
+  /// returns [`UnexpectedEof`] if there aren't enough bytes left in the reader
+  /// to fill the array.
+  ///
+  /// # Examples
+  /// ```
+  /// use std::io::Cursor;
+  /// use std::io::ErrorKind::UnexpectedEof;
+  /// use std::io::prelude::*;
+  /// use read_write_utils::prelude::*;
+  ///
+  /// let mut reader = Cursor::new(vec![1u8, 2, 3, 4, 5]);
+  /// // Successful read.
+  /// assert_eq!(reader.read_array::<3>().unwrap(), [1u8, 2, 3]);
+  /// // Not enough bytes left.
+  /// let err = reader.read_array::<3>();
+  /// assert_eq!(err.err().unwrap().kind(), UnexpectedEof);
+  /// ```
+  ///
+  /// [1]: ReadExt::copy_to_slice
   fn read_array<const N: usize>(&mut self) -> io::Result<[u8; N]> {
     let mut arr = [0u8; N];
     self
@@ -57,6 +126,21 @@ pub trait ReadExt: Read {
 }
 impl<R: Read> ReadExt for R {}
 
+#[cfg(test)]
+mod test {
+  use super::*;
+  use std::io::BufReader;
+
+  #[test]
+  fn copy_to_slice_multiple_reads() {
+    let mut cursor = BufReader::with_capacity(2, Cursor::new(vec![1u8, 2, 3, 4, 5]));
+    let mut buf = [0u8; 5];
+    let bytes_copied = cursor.copy_to_slice(&mut buf).unwrap();
+    assert_eq!(bytes_copied as usize, buf.len());
+    assert_eq!(cursor.get_ref().get_ref().as_slice(), &buf[..])
+  }
+}
+
 pub trait BufReadExt: BufRead {
   /// Checks if `self` has reached EOF.
   ///
@@ -64,6 +148,18 @@ pub trait BufReadExt: BufRead {
   ///
   /// # Errors
   /// This function returns any errors from [`Self::fill_buf()`].
+  ///
+  /// # Examples
+  /// ```
+  /// use std::io::prelude::*;
+  /// use std::io::Cursor;
+  /// use read_write_utils::prelude::*;
+  ///
+  /// let mut cursor = Cursor::new(vec![0u8; 3]);
+  /// assert!(!cursor.has_reached_eof().unwrap());
+  /// cursor.set_position(3);
+  /// assert!(cursor.has_reached_eof().unwrap());
+  /// ```
   fn has_reached_eof(&mut self) -> io::Result<bool> {
     Ok(self.fill_buf()?.is_empty())
   }
@@ -206,20 +302,20 @@ impl Resize for fs::File {
 pub trait BufWrite: Write {
   type Inner: Write + ?Sized;
 
-  fn get_ref(&self) -> &Self::Inner;
+  fn inner(&self) -> &Self::Inner;
 
-  fn get_mut(&mut self) -> &mut Self::Inner;
+  fn inner_mut(&mut self) -> &mut Self::Inner;
 }
 
 macro_rules! trivial_buf_write {
   ($type_name:ty) => {
     type Inner = $type_name;
 
-    fn get_ref(&self) -> &Self::Inner {
+    fn inner(&self) -> &Self::Inner {
       self
     }
 
-    fn get_mut(&mut self) -> &mut Self::Inner {
+    fn inner_mut(&mut self) -> &mut Self::Inner {
       self
     }
   };
@@ -272,12 +368,12 @@ impl<W: Write> BufWrite for BufWriter<W> {
   type Inner = W;
 
   /// See [`BufWriter::get_ref`].
-  fn get_ref(&self) -> &Self::Inner {
+  fn inner(&self) -> &Self::Inner {
     BufWriter::get_ref(self)
   }
 
   /// See [`BufWriter::get_mut`].
-  fn get_mut(&mut self) -> &mut Self::Inner {
+  fn inner_mut(&mut self) -> &mut Self::Inner {
     BufWriter::get_mut(self)
   }
 }
@@ -293,11 +389,11 @@ impl<W: BufWrite> BufWrite for Box<W> {
 impl<W: BufWrite> BufWrite for &mut W {
   type Inner = W::Inner;
 
-  fn get_ref(&self) -> &Self::Inner {
-    <W as BufWrite>::get_ref(self)
+  fn inner(&self) -> &Self::Inner {
+    <W as BufWrite>::inner(self)
   }
 
-  fn get_mut(&mut self) -> &mut Self::Inner {
-    <W as BufWrite>::get_mut(self)
+  fn inner_mut(&mut self) -> &mut Self::Inner {
+    <W as BufWrite>::inner_mut(self)
   }
 }

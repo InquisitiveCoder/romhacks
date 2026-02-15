@@ -21,15 +21,6 @@ document {
         }
         prop "crc32" id="crc32-prop" {
             required
-            type "number"
-            description r#"
-                The checksum of the file.
-
-                UPS and BPS patches store their own checksum in the final 4 bytes
-                of the patch file. For these patch formats, this value is the
-                checksum stored in the patch rather than the checksum of the entire
-                file.
-            "#
         }
         children {
             node "patch" {

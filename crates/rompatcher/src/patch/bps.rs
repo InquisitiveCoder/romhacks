@@ -129,30 +129,27 @@ where
   loop {
     match patch.decode_command()? {
       Command::SourceRead { length } => {
-        eprintln!("source read");
         if output.position() >= expected_source_size {
           return Err(BadPatch);
         }
-        rom.seek(SeekFrom::Start(output.position()))?;
+        rom.seek_from_start(output.position())?;
         rom
           .copy_to_other_exactly(length.get(), &mut output)
           .map_err(rom_err)?;
       }
       Command::TargetRead { length } => {
-        eprintln!("target read");
         patch
           .copy_to_other_exactly(length.get(), &mut output)
           .map_err(patch_err)?;
       }
       Command::SourceCopy { length, offset } => {
-        eprintln!("source copy, length: {length}, offset: {offset}");
         source_relative_offset = source_relative_offset
           .checked_add_signed(offset)
           .ok_or(BadPatch)?;
         if source_relative_offset >= expected_source_size {
           return Err(BadPatch);
         }
-        rom.seek(SeekFrom::Start(source_relative_offset))?;
+        rom.seek_from_start(source_relative_offset)?;
         rom
           .copy_to_other_exactly(length.get(), &mut output)
           .map_err(rom_err)?;
@@ -161,7 +158,6 @@ where
           .ok_or(BadPatch)?;
       }
       Command::TargetCopy { length, offset } => {
-        eprintln!("target copy");
         target_relative_offset = target_relative_offset
           .checked_add_signed(offset)
           .ok_or(BadPatch)?;
@@ -174,8 +170,8 @@ where
         output.seek(SeekFrom::Start(target_relative_offset))?;
         // BufWriters don't support reading, so use the inner writer instead.
         output
-          .with_inner(
-            |hasher: &mut HashingWriter<_, _>| hasher.inner_mut().get_mut(),
+          .with_inner_mut(
+            |hasher: &mut HashingWriter<_, _>| hasher.inner_mut().inner_mut(),
             |output: &mut PositionTracker<&mut O::Inner>| {
               target_copy_buffer
                 .reserve(usize::try_from(sequence_period_len.get()).unwrap_or(usize::MAX));
@@ -209,19 +205,19 @@ trait ReadBPS: Read + ReadNumber {
   fn decode_command(&mut self) -> Result<Command, Error> {
     let encoded: u64 = self.read_number()?;
     let length = NonZeroU64::new((encoded >> 2) + 1).ok_or(BadPatch)?;
-    Ok(match encoded {
+    Ok(match encoded & 3 {
       0 => Command::SourceRead { length },
       1 => Command::TargetRead { length },
-      2 => Command::SourceCopy { length, offset: self.decode_signed_number()? },
-      3 => Command::TargetCopy { length, offset: self.decode_signed_number()? },
+      2 => Command::SourceCopy { length, offset: self.decode_signed()? },
+      3 => Command::TargetCopy { length, offset: self.decode_signed()? },
       _ => return Err(BadPatch),
     })
   }
 
-  fn decode_signed_number(&mut self) -> io::Result<i64> {
-    let encoded: u64 = self.read_number()?;
+  fn decode_signed(&mut self) -> io::Result<i64> {
+    let data: u64 = self.read_number()?;
     // 63 bits always fit in an i64.
-    Ok(((encoded >> 1) as i64) * (if encoded & 1 == 1 { -1 } else { 1 }))
+    Ok((if data & 1 == 1 { -1 } else { 1 }) * (data >> 1) as i64)
   }
 }
 

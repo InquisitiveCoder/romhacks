@@ -34,7 +34,7 @@ impl<T: HasPath> HasPath for Take<T> {
 
 impl<T: HasPath> HasPath for PositionTracker<T> {
   fn path(&self) -> &Path {
-    self.get_ref().path()
+    self.inner().path()
   }
 }
 

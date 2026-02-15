@@ -81,12 +81,12 @@ where
 impl<W: BufWrite, H: Hasher> BufWrite for HashingWriter<W, H> {
   type Inner = W::Inner;
 
-  fn get_ref(&self) -> &Self::Inner {
-    self.inner().get_ref()
+  fn inner(&self) -> &Self::Inner {
+    self.inner().inner()
   }
 
-  fn get_mut(&mut self) -> &mut Self::Inner {
-    self.inner_mut().get_mut()
+  fn inner_mut(&mut self) -> &mut Self::Inner {
+    self.inner_mut().inner_mut()
   }
 }
 
