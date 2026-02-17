@@ -70,7 +70,7 @@ pub fn patch(
     };
 
     // Skip over the patched bytes in the input file.
-    rom.seek_relative_accurate(hunk_size)?;
+    rom.seek_relative(hunk_size)?;
   }
 
   match patch

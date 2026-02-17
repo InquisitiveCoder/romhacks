@@ -17,7 +17,7 @@ pub trait ReadNumber: Read {
     let mut shift = Checked::<u64>::new(1);
     loop {
       let byte = self.read_u8()?;
-      let new_value: u64 = ((u64::from(byte) & 0x7F) * shift + data) //
+      let new_value: u64 = (u64::from(byte & 0x7F) * shift + data) //
         .ok_or_else(overflow_err)?;
       if is_msb_set(byte) {
         return Ok(new_value);
@@ -39,4 +39,19 @@ pub fn overflow_err() -> io::Error {
 
 fn is_msb_set(byte: u8) -> bool {
   byte & 0x80 == 0x80
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::io::Cursor;
+
+  #[test]
+  pub fn test_read_number() {
+    let mut reader = Cursor::new(vec![0x0E, 0xB0, 0x80, 0x00u8]);
+    let offset: u64 = reader.read_number().unwrap();
+    // Expected value obtained from the RomPatcher.js implementation.
+    assert_eq!(offset, 6286);
+    assert_eq!(reader.position(), 2);
+  }
 }

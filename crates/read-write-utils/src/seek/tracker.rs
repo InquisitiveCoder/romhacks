@@ -4,6 +4,8 @@ use std::io::ErrorKind::*;
 use std::io::*;
 use std::ops::Deref;
 
+const ERR_MSG: &'static str = "PositionTracker position overflowed.";
+
 /// An I/O adapter which tracks the cursor position of its underlying stream.
 ///
 /// This facilitates various usage patterns such as [`Seek::seek_relative`],
@@ -23,7 +25,7 @@ impl<S: Seek> PositionTracker<S> {
   /// [1]: Seek::stream_position
   /// [2]: Self::from_start
   /// [3]: Self::with_known_position
-  pub fn new(mut inner: S) -> Result<Self> {
+  pub fn with_unknown_position(mut inner: S) -> Result<Self> {
     let position = inner.stream_position()?;
     Ok(Self::with_known_position(position, inner))
   }
@@ -61,17 +63,33 @@ impl<T> PositionTracker<T> {
   /// assert_eq!(0, buf[0]);
   /// // The tracker's position has been incremented by 1, but is still wrong.
   /// assert_eq!(tracker.position(), 2);
-  /// // Calling stream_position() corrects the tracker's position.
-  /// tracker.stream_position();
-  /// assert_eq!(tracker.position(), 1);
   /// ```
   ///
-  /// [1]: Self::new
+  /// [1]: Self::with_unknown_position
   pub fn with_known_position(position: u64, inner: T) -> Self {
     Self { inner, position }
   }
 
-  /// The underlying stream's seek position.
+  /// The calculated position of the inner stream.
+  ///
+  /// The accuracy of this value depends on the [`PositionTracker`] being
+  /// created with a correct initial position. For instance, if
+  /// [`PositionTracker::from_start`] is used to create a tracker, the inner
+  /// stream _must_ be at position 0 when the tracker is created.
+  ///
+  /// Performing I/O operations directly on the inner stream (e.g. via
+  /// [`BufWrite::inner_mut`]) will also desynchronize the calculated
+  /// position. [`PositionTracker::with_inner`] can be used to manipulate
+  /// the inner stream without losing track of its position.
+  ///
+  /// Finally, be aware that many [`Seek`] implementations allow seeking past
+  /// the end of the stream and return an out-of-bound position from
+  /// [`Seek::stream_position()`]. This method will likewise return
+  /// out-of-bounds positions in such cases.
+  ///
+  /// [1]: Read::read
+  /// [2]: Write::write
+  /// [3]: Seek::seek
   pub fn position(&self) -> u64 {
     self.position
   }
@@ -92,24 +110,41 @@ impl<T> PositionTracker<T> {
     (self.inner, self.position)
   }
 
+  /// Consumes this [`PositionTracker`] and returns a new one with the same
+  /// position but a different inner stream.
   pub fn map_inner<R>(self, f: impl FnOnce(T) -> R) -> PositionTracker<R> {
     PositionTracker::<R>::with_known_position(self.position, f(self.inner))
   }
 
-  pub fn with_inner_mut<F, G, R, O>(&mut self, f: F, g: G) -> Result<O>
+  /// Performs I/O operations on this [`PositionTracker`]'s inner stream while
+  /// tracking position changes.
+  ///
+  /// Specifically, a new tracker will be created with `self`'s position and the
+  /// result of applying `mapper` to a reference to the inner stream. Then,
+  /// `action` is called with a reference to the new mapper, and `self` is
+  /// updated with the borrowed tracker's position.
+  ///
+  /// This function will return the result of calling `action`.
+  pub fn with_inner<I, R, F, G>(&mut self, mapper: F, action: G) -> Result<R>
   where
-    R: ?Sized,
-    F: FnOnce(&mut T) -> &mut R,
-    G: FnOnce(&mut PositionTracker<&mut R>) -> Result<O>,
+    I: ?Sized,
+    F: FnOnce(&mut T) -> &mut I,
+    G: FnOnce(&mut PositionTracker<&mut I>) -> Result<R>,
   {
-    let mut inner_tracker = PositionTracker::with_known_position(self.position, f(&mut self.inner));
-    let result = g(&mut inner_tracker);
+    let mut inner_tracker =
+      PositionTracker::with_known_position(self.position, mapper(&mut self.inner));
+    let result = action(&mut inner_tracker);
     self.position = inner_tracker.position;
     result
   }
 
-  fn increment_position(&mut self, amt: u64) {
-    self.position = self.position.checked_add(amt).unwrap();
+  fn increment_position(&mut self, amt: impl TryInto<u64>) {
+    let amount: u64 = amt.try_into().ok().expect(ERR_MSG);
+    self.position = self.position.checked_add(amount).expect(ERR_MSG);
+  }
+
+  fn increment_position_signed(&mut self, amt: i64) {
+    self.position = self.position.checked_add_signed(amt).expect(ERR_MSG);
   }
 }
 
@@ -209,6 +244,23 @@ impl<R: Read> PositionTracker<R> {
   /// passing a `Take<PositionTracker<_>>` (or any other non-`std` reader or
   /// writer) to [`copy`] will prevent it from offloading file-to-file copies
   /// to the Linux kernel.
+  ///
+  /// # Examples
+  /// ```
+  /// use std::io::prelude::*;
+  /// use std::io::{copy, sink, Cursor};
+  /// use read_write_utils::seek::PositionTracker;
+  ///
+  /// let mut reader = PositionTracker::from_start(Cursor::new(vec![0u8, 1, 2, 3, 4]));
+  ///
+  /// let bytes_read = reader.take_from_inner(4, |take| copy(take, &mut sink()));
+  /// assert_eq!(bytes_read.unwrap(), 4);
+  /// assert_eq!(reader.position(), 4);
+  ///
+  /// let bytes_read = reader.take_from_inner(4, |take| copy(take, &mut sink()));
+  /// assert_eq!(bytes_read.unwrap(), 1);
+  /// assert_eq!(reader.position(), 5);
+  /// ```
   pub fn take_from_inner<T, F>(&mut self, amt: u64, f: F) -> Result<T>
   where
     F: FnOnce(&mut Take<&mut R>) -> Result<T>,
@@ -226,6 +278,22 @@ impl<R: Read> PositionTracker<R> {
   /// This function returns [`InvalidInput`] if `pos < self.position()`.
   ///
   /// [1]: Self::take_from_inner
+  ///
+  /// # Examples
+  /// ```
+  /// use std::io::prelude::*;
+  /// use std::io::{copy, Cursor};
+  /// use read_write_utils::prelude::*;
+  ///
+  /// let mut reader = PositionTracker::from_start(Cursor::new(vec![0u8, 1, 2, 3, 4]));
+  /// reader.seek_relative(1).unwrap();
+  /// let mut output = Vec::<u8>::new();
+  /// let bytes_copied = reader.take_from_inner_until(3, |take| {
+  ///    copy(take, &mut output)
+  /// }).unwrap();
+  /// assert_eq!(bytes_copied, 2);
+  /// assert_eq!(&output[..], &[1, 2]);
+  /// ```
   pub fn take_from_inner_until<T, F>(&mut self, pos: u64, f: F) -> Result<T>
   where
     F: FnOnce(&mut Take<&mut R>) -> Result<T>,
@@ -237,141 +305,48 @@ impl<R: Read> PositionTracker<R> {
   }
 }
 
-impl<S: BufRead + Seek> PositionTracker<S> {
-  /// Seeks to the given position in the underlying stream and updates
-  /// [`self.position()`][1] if it succeeds.
-  ///
-  /// This function will call [`seek_relative_accurate`][2] whenever possible
-  /// to make it easier to take advantage of its performance benefits.
-  /// Specifically:
-  /// * If `position - `[`self.position()`][1] fits in an [`i64`],
-  /// [`seek_relative_accurate`][2] will be used.
-  /// * Otherwise, [`self.seek(SeekFrom::Start(position))`][3] will be called.
-  ///
-  /// Unlike [`PositionTracker::seek`], this method won't lose track of the
-  /// inner stream's position when seeking past EOF.
-  ///
-  /// [1]: PositionTracker::position
-  /// [2]: PositionTracker::seek_relative_accurate
-  /// [3]: Seek::seek
-  pub fn seek_from_start(&mut self, position: u64) -> Result<u64> {
-    if let Some(offset) = position.checked_signed_difference(self.position) {
-      self.seek_relative_accurate(offset)?;
-    } else {
-      self.position = self.inner.seek(SeekFrom::Start(position))?;
-    }
-    Ok(self.position)
-  }
-
-  /// Calls either [`seek_relative`][1] or [`seek`][2] on the underlying reader
-  /// and updates [`self.position()`][3].
-  ///
-  /// Specifically, `seek` will be used iff `offset` is positive and greater
-  /// than the length of the underlying reader's buffer. This strategy avoids
-  /// discarding the buffer unnecessarily, while allowing the stream position to
-  /// be tracked reliably even when seeking past EOF. However, it should be
-  /// noted that it causes unnecessary refills when this function is called with
-  /// a large positive offset while the buffer is empty; the call to
-  /// [`BufRead::fill_buf`] will refill the buffer, but the out-of-bounds seek
-  /// will cause it to be discarded.
-  ///
-  /// [1]: Seek::seek_relative
-  /// [2]: Seek::seek
-  /// [3]: Self::position
-  pub fn seek_relative_accurate(&mut self, offset: i64) -> Result<()> {
-    // For backward seeks, we can track the position reliably since negative
-    // overflow is forbidden.
-    if offset <= 0 {
-      self.inner.seek_relative(offset)?;
-      // The inner reader must check for negative overflow, so there's no need
-      // to use checked arithmetic here.
-      self.position = self.position.wrapping_add_signed(offset);
-      return Ok(());
-    }
-
-    // For forward seeks, the inner reader may accept a seek past EOF and
-    // desynchronize our calculated position from the reader. However, if the
-    // seek doesn't fall within the buffer, calling inner.seek_relative()
-    // would've discarded the buffer, so we can call inner.seek() and use the
-    // new position reported by inner. This does run the risk of triggering an
-    // unnecessary buffer refill, but this will only occur if the buffer happens
-    // to be empty, and there's no other way to reliably track the position.
-    let offset_is_definitely_in_buffer = usize::try_from(offset)
-      .ok()
-      .map(|offset| self.inner.fill_buf().map(|buf| offset < buf.len()))
-      .transpose()?
-      .unwrap_or(false);
-    if offset_is_definitely_in_buffer {
-      self.inner.seek_relative(offset)?;
-      self.position = self
-        .position
-        .checked_add_signed(offset)
-        .expect("PositionTracker position overflowed.");
-    } else {
-      self.position = self.inner.seek(SeekFrom::Current(offset))?;
-    }
-    Ok(())
-  }
-}
-
 impl<S: Seek> Seek for PositionTracker<S> {
   /// Seeks to the given position in the underlying stream and updates
   /// [`self.position()`][1] if it succeeds.
   ///
-  /// This function will call [`seek_relative`][2] whenever possible to make
-  /// it easier to take advantage of its performance benefits.
-  /// Specifically:
-  /// * If the seek is relative to the start of the stream, [`position()`][1]
-  /// will be used to calculate the offset from the current position. If the
-  /// resulting offset fits in an [`i64`], [`seek_relative`][2] will be used.
+  /// This function will call [`seek_relative`][2] on the inner stream whenever
+  /// possible to take advantage of its performance benefits. Specifically:
+  /// * When seeking from the start of the stream, [`seek_relative`][2] will be
+  /// used if the offset from the current position fits in an `i64`.
   /// * If the seek is relative to the current position, [`seek_relative`][2]
   /// is always used.
-  /// * If the seek is relative to the end of the stream, [`seek_relative`][2]
-  /// will **never** be used, since the offset can't be calculated without
-  /// knowing the size of the file.
   ///
   /// [1]: Self::position
   /// [2]: Seek::seek_relative
-  /// [3]: Seek::seek
   fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
     use SeekFrom::*;
-    if let Some(offset) = match pos {
+    let relative_offset = match pos {
       Start(position) => position.checked_signed_difference(self.position),
       Current(offset) => Some(offset),
       _ => None,
-    } {
-      self.seek_relative(offset)?;
-    } else {
-      self.position = self.inner.seek(pos)?;
+    };
+    match relative_offset {
+      Some(offset) => self.seek_relative(offset)?,
+      None => {
+        self.position = self.inner.seek(pos)?;
+      }
     }
     Ok(self.position)
   }
 
-  /// Returns [`PositionTracker::position()`].
+  /// Returns [`Ok(self.position())`](PositionTracker::position).
   fn stream_position(&mut self) -> Result<u64> {
-    self.position = self.inner.stream_position()?;
-    Ok(self.position)
+    Ok(self.position())
   }
 
-  /// Calls either [`seek_relative`][1] or [`seek`][2] on the underlying reader
-  /// and updates [`Self::position`][3].
-  ///
-  /// Specifically, `seek` will be used iff `offset` is positive and greater
-  /// than the length of the underlying reader's buffer. This strategy avoids
-  /// discarding the buffer unnecessarily, while allowing the stream position to
-  /// be tracked reliably even when seeking past EOF. However, it should be
-  /// noted that it causes unnecessary refills when this function is called with
-  /// a large positive offset while the buffer is empty; the call to
-  /// [`BufRead::fill_buf`] will refill the buffer, but the out-of-bounds seek
-  /// will cause it to be discarded.
+  /// Calls [`seek_relative`][1] on the inner stream and updates
+  /// [`self.position()`][2].
   ///
   /// [1]: Seek::seek_relative
-  /// [2]: Seek::seek
-  /// [3]: Self::position
+  /// [2]: Self::position
   fn seek_relative(&mut self, offset: i64) -> Result<()> {
-    // The inner reader will check for negative overflow.
     self.inner.seek_relative(offset)?;
-    self.position = self.position.wrapping_add_signed(offset);
+    self.increment_position_signed(offset);
     Ok(())
   }
 }
@@ -417,8 +392,8 @@ impl<W: BufWrite> PositionTracker<W> {
 
 impl<R: Read> Read for PositionTracker<R> {
   fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-    let amount = self.inner.read(buf)?;
-    self.position += amount as u64;
+    let amount: usize = self.inner.read(buf)?;
+    self.increment_position(amount);
     Ok(amount)
   }
 }
@@ -436,14 +411,14 @@ impl<R: BufRead> BufRead for PositionTracker<R> {
   /// [`fill_buf`](BufRead::fill_buf).
   fn consume(&mut self, amt: usize) {
     self.inner.consume(amt);
-    self.position += amt as u64;
+    self.increment_position(amt);
   }
 }
 
 impl<W: Write> Write for PositionTracker<W> {
   fn write(&mut self, buf: &[u8]) -> Result<usize> {
     let amount = self.inner.write(buf)?;
-    self.position += amount as u64;
+    self.increment_position(amount);
     Ok(amount)
   }
 
@@ -459,6 +434,14 @@ impl<W: BufWrite> BufWrite for PositionTracker<W> {
     self.inner.inner()
   }
 
+  /// Returns a mutable reference to [`self.inner()`][1].
+  ///
+  /// **Warning:** Performing I/O operations on the inner stream will cause its
+  /// position to differ from the value calculated by this [`PositionTracker`].
+  /// See [`PositionTracker::with_inner`] for a safer alternative.
+  ///
+  /// [1]: PositionTracker::inner
+  /// [2]: PositionTracker::position
   fn inner_mut(&mut self) -> &mut Self::Inner {
     self.inner.inner_mut()
   }

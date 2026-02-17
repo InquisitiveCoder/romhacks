@@ -1,6 +1,7 @@
 use super::*;
 use crate::seek::PositionTracker;
 use std::io::ErrorKind::InvalidInput;
+use std::io::SeekFrom;
 
 /// A [`Read`] adapter that hashes every byte up to its underlying reader's
 /// current position once and only once.
@@ -181,12 +182,12 @@ where
     if position <= hasher_position {
       // Seeking to a position that's already been hashed, nothing to do but
       // seek the inner stream.
-      self.inner.seek_from_start(position)?;
+      self.inner.seek(SeekFrom::Start(position))?;
     } else {
       // Seeking to unhashed data.
       // Seek to the furthest hashed position, then read and hash until the
       // new position is reached.
-      self.inner.seek_from_start(hasher_position)?;
+      self.inner.seek(SeekFrom::Start(hasher_position))?;
       self
         .inner
         .take_from_inner_until(position, |inner| inner.copy_to_inner_of(&mut self.hasher))?;

@@ -13,7 +13,6 @@ use read_write_utils::prelude::*;
 use std::cmp::Ordering;
 use std::io::prelude::*;
 use std::io::ErrorKind::Interrupted;
-use std::ops::{Deref, DerefMut};
 use std::{io, iter};
 use wide::u8x16;
 
@@ -116,7 +115,7 @@ fn apply_patch(
   start_of_footer: &u64,
   expected_target_size: u64,
 ) -> Result<(), Error> {
-  let mut output_buf = CacheAlignedBuf::new();
+  let mut output_buf: AVec<u8> = avec![];
   loop {
     let relative_offset: u64 = patch.read_number().map_err(patch_err)?;
     rom
@@ -141,7 +140,7 @@ fn apply_hunk(
   rom: &mut impl BufRead,
   patch: &mut impl BufRead,
   output: &mut impl BufWrite,
-  output_buf: &mut CacheAlignedBuf,
+  output_buf: &mut AVec<u8>,
 ) -> Result<(), Error> {
   // Each iteration consumes at most one buffer's worth of bytes from the patch
   // until the end of the hunk is found.
@@ -159,14 +158,14 @@ fn apply_hunk(
     // The memchr crate uses SIMD to efficiently find the first occurrence of
     // a specified byte in a slice. We take advantage of this to find the NUL
     // byte that terminates the current hunk.
-    let (patch_buf, is_end_of_hunk) = ::memchr::memchr(0, patch_buf)
-      .map(|i| (&patch_buf[..i], true))
+    let (patch_buf, is_end_of_hunk) = ::memchr::memchr(0x00, patch_buf)
+      .map(|i| (&patch_buf[..i + 1], true))
       .unwrap_or_else(|| (patch_buf, false));
 
     let output_buf: &mut [u8] = {
-      output_buf.resize(patch_buf.len());
+      output_buf.resize(patch_buf.len(), 0x00);
       rom
-        .chain(io::repeat(0))
+        .chain(io::repeat(0x00))
         .copy_to_slice(&mut output_buf[..])?;
       &mut output_buf[..]
     };
@@ -174,9 +173,8 @@ fn apply_hunk(
     xor_hunks(patch_buf, output_buf);
     output.write_all(output_buf)?;
 
-    // If the delimiter was found, add 1 so it gets consumed too.
-    let read_amt = patch_buf.len() + usize::from(is_end_of_hunk);
-    patch.consume(read_amt);
+    let consume_amt = patch_buf.len();
+    patch.consume(consume_amt);
 
     if is_end_of_hunk {
       break;
@@ -217,29 +215,15 @@ fn xor_simd((patch_chunk, output_chunk): (&[u8], &mut [u8])) {
   output_chunk.copy_from_slice(result);
 }
 
-struct CacheAlignedBuf(AVec<u8>);
+#[cfg(test)]
+mod tests {
+  use super::*;
 
-impl CacheAlignedBuf {
-  pub fn new() -> Self {
-    Self(avec![])
-  }
-
-  /// Follows the same semantics as [`Vec::resize`].
-  pub fn resize(&mut self, size: usize) {
-    self.0.resize(size, 0);
-  }
-}
-
-impl Deref for CacheAlignedBuf {
-  type Target = [u8];
-
-  fn deref(&self) -> &Self::Target {
-    &self.0[..]
-  }
-}
-
-impl DerefMut for CacheAlignedBuf {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.0[..]
+  #[test]
+  pub fn test_xor_simd() {
+    let patch_chunk = &[0xEBu8, 0x17];
+    let rom_chunk = &mut [0x38u8, 0xAB];
+    xor_simd((patch_chunk, rom_chunk));
+    assert_eq!(rom_chunk, &[0xEBu8 ^ 0x38u8, 0x17 ^ 0xAB]);
   }
 }

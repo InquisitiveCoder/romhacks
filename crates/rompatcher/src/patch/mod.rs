@@ -1,4 +1,4 @@
-use crate::crc::{CRC32Hasher, Crc32, HasCrc32};
+use crate::crc::{CRC32Hasher, Crc32};
 use crate::error;
 use crate::error::prelude::*;
 use read_write_utils::hash::{HashingReader, HashingWriter, MonotonicHashingReader};

@@ -132,7 +132,7 @@ where
         if output.position() >= expected_source_size {
           return Err(BadPatch);
         }
-        rom.seek_from_start(output.position())?;
+        rom.seek(SeekFrom::Start(output.position()))?;
         rom
           .copy_to_other_exactly(length.get(), &mut output)
           .map_err(rom_err)?;
@@ -149,7 +149,7 @@ where
         if source_relative_offset >= expected_source_size {
           return Err(BadPatch);
         }
-        rom.seek_from_start(source_relative_offset)?;
+        rom.seek(SeekFrom::Start(source_relative_offset))?;
         rom
           .copy_to_other_exactly(length.get(), &mut output)
           .map_err(rom_err)?;
@@ -170,7 +170,7 @@ where
         output.seek(SeekFrom::Start(target_relative_offset))?;
         // BufWriters don't support reading, so use the inner writer instead.
         output
-          .with_inner_mut(
+          .with_inner(
             |hasher: &mut HashingWriter<_, _>| hasher.inner_mut().inner_mut(),
             |output: &mut PositionTracker<&mut O::Inner>| {
               target_copy_buffer

@@ -112,7 +112,7 @@ where
         let source_position: u64 = patch.read_integer().map_err(patch_err)?;
         output.seek(SeekFrom::Start(source_position))?;
         output
-          .with_inner_mut(
+          .with_inner(
             |inner| inner.inner_mut(),
             |output| {
               output

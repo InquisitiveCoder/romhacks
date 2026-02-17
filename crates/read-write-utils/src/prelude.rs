@@ -8,6 +8,10 @@ use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
 use std::io::{copy, BufWriter, Cursor, Empty, Error, Sink, StderrLock, StdoutLock, Take};
 
 pub trait ReadExt: Read {
+  fn copy_to(&mut self, writer: &mut impl Write) -> io::Result<u64> {
+    copy(self, writer)
+  }
+
   /// Calls [`read`][1] repeatedly until `slice` is full or EOF is reached.
   ///
   /// This is equivalent to using [`take`](Self::take) and [`copy`], but the
@@ -84,7 +88,10 @@ pub trait ReadExt: Read {
       match self.read(&mut slice) {
         Ok(0) => return Ok(total),
         Ok(read_amount) => {
-          total += read_amount as u64;
+          total = u64::try_from(read_amount)
+            .ok()
+            .and_then(|read_amount| u64::checked_add(total, read_amount))
+            .expect("copy_to_slice result overflowed");
           slice = &mut slice[read_amount..];
         }
         Err(e) if e.kind() == Interrupted => {}
@@ -185,11 +192,11 @@ pub trait BufReadExt: BufRead {
   /// its original position.
   ///
   /// This function is intended for relatively small lookahead amounts, such
-  /// that the [`copy`][2] and seek are likely to fall within the reader's internal
-  /// buffer. Additionally, in many use cases the lookahead amount is derived
-  /// from the length of a buffer or the size of the data type at the end
-  /// of the byte stream. For these reasons, `usize` was chosen as the parameter
-  /// and return type over `u64`.
+  /// that the [`copy`][2] and seek are likely to fall within the reader's
+  /// internal buffer. Additionally, in many use cases the lookahead amount is
+  /// derived from the length of a buffer or the size of a footer structure at
+  /// the end of the byte stream. For these reasons, `usize` was chosen as the
+  /// parameter and return type over `u64`.
   ///
   /// # Errors
   /// This function returns [`InvalidInput`] if `amount` can't be converted to
@@ -202,15 +209,15 @@ pub trait BufReadExt: BufRead {
     Self: Seek,
   {
     let amount: i64 = i64::try_from(amount).map_err(|_| InvalidInput)?;
-    // The cast to u64 is safe since amount started out as an unsigned type.
+    // The cast to u64 is safe since 0 <= amount <= i64::MAX < u64::MAX.
     let bytes_read = copy(&mut self.take(amount as u64), writer)?;
     self.seek_relative(-amount)?;
     // This cast is also safe since bytes_read <= amount.
     Ok(bytes_read as usize)
   }
 
-  /// Uses [`look_ahead`][1] to check if the number of remaining bytes are less
-  /// than, equal to or greater than `amount`.
+  /// Uses [`look_ahead`][1] to compare the number of remaining bytes to
+  /// `amount`.
   ///
   /// [1]: BufReadExt::look_ahead
   fn cmp_remaining_len(&mut self, amount: usize) -> io::Result<Ordering>
@@ -225,10 +232,13 @@ pub trait BufReadExt: BufRead {
 impl<R: BufRead> BufReadExt for R {}
 
 pub trait TakeExt {
-  /// Performs an I/O operation that reads exactly [`Take::limit`] bytes.
+  /// Performs an I/O operation that reads exactly [`self.limit()`][1] bytes.
   ///
   /// # Errors
-  /// Returns [`UnexpectedEof`] if `self.limit() > 0` after `f` is called.
+  /// If `f` fails, the error will be returned. If `f` succeeds but
+  /// `self.limit() > 0` afterward, [`UnexpectedEof`] will be returned.
+  ///
+  /// [1]: Take::limit
   fn exactly<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<R>;
 }
 
@@ -240,13 +250,6 @@ impl<I> TakeExt for Take<I> {
     }
     Ok(result)
   }
-}
-
-pub trait CopyTo<W>: Read
-where
-  W: Write,
-{
-  fn copy_to(&mut self, writer: &mut W) -> io::Result<u64>;
 }
 
 pub trait WriteExt: Write {
@@ -294,16 +297,24 @@ impl Resize for fs::File {
   }
 }
 
-/// Writers that either have an internal buffer or don't perform I/O.
+/// Writers that have an internal buffer or don't perform I/O.
 ///
-/// The presence of this trait indicates that a writer is suitable for frequent
-/// small writes without significant performance overhead due to system calls
-/// or acquiring a lock.
+/// This trait indicates that a writer is suitable for small and repeated
+/// writes, as explained in the documentation for [`BufWriter`].
 pub trait BufWrite: Write {
+  /// The type of the underlying writer, if any. May be `Self` for writers that
+  /// don't perform I/O, such as [`Cursor`] or [`Sink`].
   type Inner: Write + ?Sized;
 
+  /// Returns a reference to the underlying writer.
   fn inner(&self) -> &Self::Inner;
 
+  /// Returns a mutable reference to the underlying writer.
+  ///
+  /// This method is intended for cases where the inner writer has capabilities
+  /// that `self` doesn't (e.g. [`Read`].) Writing directly to the inner writer
+  /// without calling [`flush`][1] is likely to result in the data being
+  /// written in an unintended order.
   fn inner_mut(&mut self) -> &mut Self::Inner;
 }
 
