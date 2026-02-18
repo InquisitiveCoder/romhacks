@@ -2,6 +2,8 @@ use crate::error::prelude::*;
 use crate::kdl::prelude::*;
 use crate::{crc, hack, kdl, mem};
 use fs_err as fs;
+use kdl::KdlValue;
+use kdl_schema_check::CheckFailure;
 use std::borrow::Cow;
 use std::io;
 use std::path;
@@ -109,9 +111,10 @@ fn validate_file(
     .iter()
     .find(|node| node.name().value() == RESULT)
     .and_then(|node| node.get(CRC_32))
-    .and_then(|value| value.as_integer().map(|x: i128| x as u32))
+    .and_then(KdlValue::as_string)
+    .and_then(|str| u32::from_str_radix(str, 16).ok())
     .map(crc::Crc32::new)
-    .unwrap();
+    .ok_or(GetOrCreateError::BadManifest)?;
   if file_crc32 != last_result_crc32 {
     Err(GetOrCreateError::ManifestOutdated)?;
   }
@@ -163,4 +166,6 @@ pub enum GetOrCreateError {
   AlreadyPatched,
   #[error("The file doesn't match the last patch result in the manifest.")]
   ManifestOutdated,
+  #[error("The manifest file is not properly formatted.")]
+  BadManifest,
 }

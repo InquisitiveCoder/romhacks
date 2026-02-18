@@ -116,14 +116,21 @@ fn apply_patch(
   expected_target_size: u64,
 ) -> Result<(), Error> {
   let mut output_buf: AVec<u8> = avec![];
+  let mut is_subsequent_iteration = false;
   loop {
     let relative_offset: u64 = patch.read_number().map_err(patch_err)?;
     rom
-      .copy_to_other_exactly(relative_offset, &mut output)
+      // As a minor optimization, apply_patch_block doesn't XOR the 0x00
+      // delimiter with the corresponding ROM byte. Therefore, one extra byte
+      // needs to be copied on subsequent iterations.
+      .copy_to_other_exactly(
+        u64::from(is_subsequent_iteration) + relative_offset,
+        &mut output,
+      )
       .map_err(rom_err)?;
-    apply_hunk(&mut rom, &mut patch, &mut output, &mut output_buf)?;
+    apply_patch_block(&mut rom, &mut patch, &mut output, &mut output_buf)?;
     match patch.position().cmp(&start_of_footer) {
-      Ordering::Less => continue,
+      Ordering::Less => is_subsequent_iteration = true,
       Ordering::Equal => break, // reached the footer
       Ordering::Greater => return Err(BadPatch),
     }
@@ -136,47 +143,43 @@ fn apply_patch(
   Ok(())
 }
 
-fn apply_hunk(
+/// Applies a single patch block (offset + XOR bytes) to the output.
+fn apply_patch_block(
   rom: &mut impl BufRead,
   patch: &mut impl BufRead,
   output: &mut impl BufWrite,
   output_buf: &mut AVec<u8>,
 ) -> Result<(), Error> {
-  // Each iteration consumes at most one buffer's worth of bytes from the patch
-  // until the end of the hunk is found.
+  // Keep XORing the patch's read buffer with the  corresponding ROM bytes until
+  // the end-of-block delimiter (0x00) is found.
   loop {
-    // If there is no data on the first iteration, or the end of the hunk
-    // section is reached without having found the terminating NUL byte, the
-    // patch is corrupt.
-    let patch_buf: &[u8] = match patch.fill_buf() {
-      Ok(buf) if buf.is_empty() => return Err(BadPatch),
+    let patch_read_buf: &[u8] = match patch.fill_buf() {
+      Ok(buf) if buf.is_empty() => return Err(BadPatch), // EOF
       Ok(buf) => buf,
       Err(e) if e.kind() == Interrupted => continue,
       Err(e) => Err(e)?,
     };
 
-    // The memchr crate uses SIMD to efficiently find the first occurrence of
-    // a specified byte in a slice. We take advantage of this to find the NUL
-    // byte that terminates the current hunk.
-    let (patch_buf, is_end_of_hunk) = ::memchr::memchr(0x00, patch_buf)
-      .map(|i| (&patch_buf[..i + 1], true))
-      .unwrap_or_else(|| (patch_buf, false));
+    // memchr uses SIMD to efficiently find the 1st occurrence of 0x00.
+    let (patch_bytes, reached_end_of_block) = ::memchr::memchr(0x00, patch_read_buf)
+      .map(|i| (&patch_read_buf[..i], true))
+      .unwrap_or_else(|| (patch_read_buf, false));
 
-    let output_buf: &mut [u8] = {
-      output_buf.resize(patch_buf.len(), 0x00);
-      rom
-        .chain(io::repeat(0x00))
-        .copy_to_slice(&mut output_buf[..])?;
-      &mut output_buf[..]
+    let patch_xor_rom_bytes: &[u8] = {
+      output_buf.resize(patch_bytes.len(), 0x00);
+      let rom_bytes = &mut output_buf[..];
+      rom.chain(io::repeat(0x00)).copy_to_slice(rom_bytes)?;
+      xor_slices(patch_bytes, rom_bytes);
+      output_buf.as_slice()
     };
 
-    xor_hunks(patch_buf, output_buf);
-    output.write_all(output_buf)?;
+    output.write_all(patch_xor_rom_bytes)?;
 
-    let consume_amt = patch_buf.len();
+    // If the delimiter was found, add 1 to consume it as well.
+    let consume_amt = patch_bytes.len() + usize::from(reached_end_of_block);
     patch.consume(consume_amt);
 
-    if is_end_of_hunk {
+    if reached_end_of_block {
       break;
     }
   }
@@ -185,15 +188,15 @@ fn apply_hunk(
 
 /// Uses [`rayon`] to XOR `patch_hunk` and `rom_hunk` in parallel.
 /// `rom_hunk` should be aligned to the cache line size to prevent false sharing.
-fn xor_hunks(patch_hunk: &[u8], output_hunk: &mut [u8]) {
-  debug_assert_eq!(patch_hunk.len(), output_hunk.len());
-  patch_hunk
+fn xor_slices(patch_bytes: &[u8], rom_bytes: &mut [u8]) {
+  debug_assert_eq!(patch_bytes.len(), rom_bytes.len());
+  patch_bytes
     .par_chunks(CACHELINE_ALIGN)
-    .zip(output_hunk.par_chunks_mut(CACHELINE_ALIGN))
+    .zip(rom_bytes.par_chunks_mut(CACHELINE_ALIGN))
     .for_each(xor_cache_line);
 }
 
-/// Uses SIMD to XOR two equal-length slices together.
+/// Uses SIMD to XOR two cache line-sized slices together.
 fn xor_cache_line((patch_cache_line, output_cache_line): (&[u8], &mut [u8])) {
   debug_assert_eq!(patch_cache_line.len(), output_cache_line.len());
   iter::zip(

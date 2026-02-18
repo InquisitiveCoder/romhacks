@@ -84,6 +84,7 @@ impl Args {
       Crc32::new(checksums.patch_crc32),
       Crc32::new(checksums.target_crc32),
     );
+    doc.autoformat();
     let manifest_string: String = doc.to_string();
     fs::write(&manifest_path, &manifest_string)?;
     println!("{manifest_string}");
@@ -117,6 +118,7 @@ impl Error {
         manifest::GetOrCreateError::Kdl(_) => K::BadManifest,
         manifest::GetOrCreateError::AlreadyPatched => K::AlreadyPatched,
         manifest::GetOrCreateError::ManifestOutdated => K::ManifestOutdated,
+        manifest::GetOrCreateError::BadManifest => K::BadManifest,
       },
       Error::IO(_) => K::IOError,
       Error::Patching(_) => K::Patching,
