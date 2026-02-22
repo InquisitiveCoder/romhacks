@@ -39,9 +39,9 @@ impl<T> PositionTracker<T> {
     Self { inner, position: 0 }
   }
 
-  /// Creates a `PositionTracker` initialized to the given seek position.
+  /// Creates a `PositionTracker` initialized to the given pos position.
   /// It's the caller's responsibility to ensure `position` matches `inner`'s
-  /// seek position.
+  /// pos position.
   ///
   /// If the stream's position isn't known, use [`new`][1].
   ///
@@ -51,7 +51,7 @@ impl<T> PositionTracker<T> {
   /// ```
   /// use std::io::prelude::*;
   /// use std::io::Cursor;
-  /// use read_write_utils::seek::PositionTracker;
+  /// use read_write_utils::pos::PositionTracker;
   ///
   /// let mut inner = Cursor::new(vec![0u8, 1, 2, 3]);
   /// let mut tracker = PositionTracker::with_known_position(1, inner);
@@ -218,7 +218,7 @@ impl<R: Read> PositionTracker<R> {
   /// ```
   /// use std::io::prelude::*;
   /// use std::io::{copy, sink, Cursor};
-  /// use read_write_utils::seek::PositionTracker;
+  /// use read_write_utils::pos::PositionTracker;
   ///
   /// let mut reader = PositionTracker::from_start(Cursor::new(vec![0u8, 1, 2, 3, 4]));
   ///
@@ -282,7 +282,7 @@ impl<S: Seek> Seek for PositionTracker<S> {
   /// possible to take advantage of its performance benefits. Specifically:
   /// * When seeking from the start of the stream, [`seek_relative`][2] will be
   /// used if the offset from the current position fits in an `i64`.
-  /// * If the seek is relative to the current position, [`seek_relative`][2]
+  /// * If the pos is relative to the current position, [`seek_relative`][2]
   /// is always used.
   ///
   /// [1]: Self::position

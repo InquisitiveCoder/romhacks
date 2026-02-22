@@ -1,4 +1,6 @@
-use super::*;
+use std::hash::Hasher;
+use std::io;
+use std::io::prelude::*;
 
 /// A [`Read`] adapter that hashes the bytes read from its underlying reader.
 pub struct HashingReader<R, H> {

@@ -1,5 +1,9 @@
-use super::*;
-use crate::seek::PositionTracker;
+use crate::HashingWriter;
+use read_write_utils::pos::PositionTracker;
+use read_write_utils::prelude::*;
+use std::hash::Hasher;
+use std::io;
+use std::io::prelude::*;
 use std::io::ErrorKind::InvalidInput;
 use std::io::SeekFrom;
 
@@ -93,15 +97,15 @@ where
 }
 
 impl<R: BufRead + Seek, H: Hasher> Seek for MonotonicHashingReader<R, H> {
-  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+  fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
     match pos {
-      io::SeekFrom::Start(position) => {
+      SeekFrom::Start(position) => {
         self.seek_and_hash_to(position)?;
       }
-      io::SeekFrom::Current(offset) => {
+      SeekFrom::Current(offset) => {
         self.seek_relative(offset)?;
       }
-      io::SeekFrom::End(offset) => {
+      SeekFrom::End(offset) => {
         // Hash as many bytes as possible before discarding the buffer.
         // The buffer might include the end of the stream, so don't read past
         // buf.len() + offset.
@@ -181,7 +185,7 @@ where
     let hasher_position = self.hasher.position();
     if position <= hasher_position {
       // Seeking to a position that's already been hashed, nothing to do but
-      // seek the inner stream.
+      // pos the inner stream.
       self.inner.seek(SeekFrom::Start(position))?;
     } else {
       // Seeking to unhashed data.

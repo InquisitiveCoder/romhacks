@@ -1,7 +1,7 @@
 use crate::crc::CRC32Hasher;
 use crate::error;
 use crate::error::prelude::*;
-use read_write_utils::hash::{HashingReader, HashingWriter, MonotonicHashingReader};
+use read_write_hashers::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
 use std::fmt;
 use std::io;
@@ -99,7 +99,7 @@ impl<W: Write> Write for Patch<W> {
 }
 
 impl<S: Seek> Seek for Patch<S> {
-  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+  fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
     self.file.seek(pos)
   }
 }
@@ -239,7 +239,7 @@ impl Patcher {
     let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
-    ppf::patch(&mut rom, &mut patch, &mut output, strict)?;
+    ppf::patch(&mut rom, &mut patch, &mut output, strict)??;
     io::copy(&mut rom, &mut io::sink())?;
     Ok(Checksums {
       source_crc32: rom.hasher().finish().value(),
@@ -258,7 +258,7 @@ impl Patcher {
     let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
-    vcd::patch(&mut rom, &mut patch, &mut output)?;
+    vcd::patch(&mut rom, &mut patch, &mut output)??;
     io::copy(&mut rom, &mut io::sink())?;
     Ok(Checksums {
       source_crc32: rom.hasher().finish().value(),
@@ -342,9 +342,9 @@ mod err {
     fn from(value: ups::PatchingError) -> Self {
       match value {
         ups::PatchingError::BadPatch => Self::BadPatch,
-        ups::PatchingError::WrongInputFile => Self::WrongInputFile,
         ups::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
         ups::PatchingError::AlreadyPatched => Self::AlreadyPatched,
+        ups::PatchingError::WrongInputFile => Self::WrongInputFile,
       }
     }
   }
@@ -353,8 +353,8 @@ mod err {
     fn from(value: ppf::PatchingError) -> Self {
       match value {
         ppf::PatchingError::BadPatch => Self::BadPatch,
-        ppf::PatchingError::WrongInputFile => Self::WrongInputFile,
         ppf::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
+        ppf::PatchingError::WrongInputFile => Self::WrongInputFile,
       }
     }
   }
@@ -363,7 +363,6 @@ mod err {
     fn from(value: vcd::PatchingError) -> Self {
       match value {
         vcd::PatchingError::BadPatch => Self::BadPatch,
-        vcd::PatchingError::WrongInputFile => Self::WrongInputFile,
         vcd::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
         vcd::PatchingError::UnsupportedPatchFeature => Self::UnsupportedPatchFeature,
       }

@@ -1,4 +1,7 @@
-use super::*;
+use read_write_utils::prelude::*;
+use std::hash::Hasher;
+use std::io;
+use std::io::prelude::*;
 
 /// A [`Write`] adapter that hashes the bytes written to its underlying writer.
 pub struct HashingWriter<W, H> {

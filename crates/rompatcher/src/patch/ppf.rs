@@ -2,7 +2,7 @@ use crate::convert::prelude::*;
 use crate::patch;
 use byteorder::{ReadBytesExt, LE};
 use range_utils::prelude::CheckedRange;
-use read_write_utils::hash::{HashingReader, HashingWriter};
+use read_write_hashers::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
 use result_result_try::try2;
 use rompatcher_err::*;
@@ -293,7 +293,7 @@ impl Format {
     // buffer and performing an additional read.
     let end_buf_pos: u64 = if range.end > patch.capacity() as u64 {
       // The buffer needs to be empty for BufReader::fill_buf to refill it;
-      // BufReader::seek.rs will always discard the buffer.
+      // BufReader::pos.rs will always discard the buffer.
       let pos: u64 = patch.seek(io::SeekFrom::End(-(patch.capacity() as i64)))?;
       patch.fill_buf()?;
       pos
@@ -301,7 +301,7 @@ impl Format {
       range.start
     };
 
-    // All of the following relative seeks (except possibly the final seek.rs back
+    // All of the following relative seeks (except possibly the final pos.rs back
     // to the start of the patch region) should fall within the buffer.
 
     // Seek to the end-of-footer magic string.
@@ -311,11 +311,11 @@ impl Format {
     let seek_to_start = |patch: &mut io::BufReader<R>, pos: u64| -> io::Result<()> {
       if range.start >= end_buf_pos {
         // The start of the patch area falls within the read buffer.
-        // Perform a relative seek.rs to keep the buffer.
+        // Perform a relative pos.rs to keep the buffer.
         patch.seek_relative(range.start as i64 - pos as i64)
       } else {
         // The start of the patch area isn't in the buffer, so the buffer will
-        // be discarded regardless of how we seek.rs. An absolute seek.rs is simpler
+        // be discarded regardless of how we pos.rs. An absolute pos.rs is simpler
         // and avoids overflow issues when calculating this offset.
         patch.seek(io::SeekFrom::Start(range.start))?;
         Ok(())
@@ -326,7 +326,7 @@ impl Format {
       let mut buf = [0u8; END_MAGIC.len()];
       patch.read_exact(&mut buf[..]).map(|_| buf)?
     };
-    // If there's no footer, seek.rs back to the start of the patch data and return
+    // If there's no footer, pos.rs back to the start of the patch data and return
     // EOF. This is the most common case.
     if buf != END_MAGIC {
       seek_to_start(patch, end_magic_pos)?;

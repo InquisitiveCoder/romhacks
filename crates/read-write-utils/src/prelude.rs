@@ -1,4 +1,4 @@
-pub use super::seek::{PositionTracker, PositionTrackerReadExt};
+pub use super::pos::{PositionTracker, PositionTrackerReadExt};
 use crate::DEFAULT_BUF_SIZE;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -192,7 +192,7 @@ pub trait BufReadExt: BufRead {
   /// its original position.
   ///
   /// This function is intended for relatively small lookahead amounts, such
-  /// that the [`copy`][2] and seek are likely to fall within the reader's
+  /// that the [`copy`][2] and pos are likely to fall within the reader's
   /// internal buffer. Additionally, in many use cases the lookahead amount is
   /// derived from the length of a buffer or the size of a footer structure at
   /// the end of the byte stream. For these reasons, `usize` was chosen as the

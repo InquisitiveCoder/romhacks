@@ -6,7 +6,7 @@ use crate::patch::byuu::*;
 use aligned_vec::{avec, AVec, CACHELINE_ALIGN};
 use byteorder::{ReadBytesExt, LE};
 use ::rayon::prelude::*;
-use read_write_utils::hash::{HashingReader, HashingWriter};
+use read_write_hashers::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
 use result_result_try::try2;
 use rompatcher_err::prelude::*;

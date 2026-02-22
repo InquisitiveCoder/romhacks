@@ -15,7 +15,7 @@ const EOF_OFFSET: u32 = u32::from_be_bytes([0, b'E', b'O', b'F']);
 
 /// Applies an IPS patch to a ROM. Returns the size of the patched file.
 ///
-/// If this function succeeds, `patch` and `output`'s seek positions will be at
+/// If this function succeeds, `patch` and `output`'s pos positions will be at
 /// EOF, `rom`'s position is unspecified, and the result is the size of `output`.
 ///
 /// # Errors

@@ -175,8 +175,8 @@ where
     loop {
       let instruction_code = try2!(cursors.instructions_and_sizes.read_u8().map_patch_err()?);
       let (first, second) = Self::decode_instruction_pair(instruction_code);
-      Self::execute_instruction(&mut cursors, first)?;
-      Self::execute_instruction(&mut cursors, second)?;
+      try2!(Self::execute_instruction(&mut cursors, first)?);
+      try2!(Self::execute_instruction(&mut cursors, second)?);
       if cursors.instructions_and_sizes.reached_eof()? {
         break;
       }
@@ -558,8 +558,6 @@ const fn set_msb<const N: usize>(arr: [u8; N]) -> [u8; N] {
 pub enum PatchingError {
   #[error("The patch file is corrupt.")]
   BadPatch,
-  #[error("The patch is not meant for this file.")]
-  WrongInputFile,
   #[error(
     "The patch is not meant for this file, and can't be applied due to the file being too small."
   )]

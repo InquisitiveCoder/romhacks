@@ -1042,6 +1042,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "read-write-hashers"
+version = "0.1.0"
+dependencies = [
+ "read-write-utils",
+]
+
+[[package]]
 name = "read-write-utils"
 version = "0.1.0"
 dependencies = [
@@ -1109,6 +1116,7 @@ dependencies = [
  "pretty_env_logger",
  "range-utils",
  "rayon",
+ "read-write-hashers",
  "read-write-utils",
  "regex-lite",
  "result-result-try",

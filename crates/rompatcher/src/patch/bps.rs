@@ -3,7 +3,7 @@ use crate::patch;
 use crate::patch::byuu::varint::{DecodingError, ReadNumber};
 use crate::patch::byuu::PatchReport;
 use byteorder::{ReadBytesExt, LE};
-use read_write_utils::hash::{HashingReader, HashingWriter, MonotonicHashingReader};
+use read_write_hashers::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
 use read_write_utils::repeat::RepeatSlice;
 use result_result_try::try2;
