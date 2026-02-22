@@ -1,11 +1,11 @@
 use crate::convert::prelude::*;
 use crate::patch;
-use crate::patch::Error::{BadPatch, WrongInputFile};
-use crate::patch::{patch_err, rom_err};
 use byteorder::{ReadBytesExt, LE};
 use range_utils::prelude::CheckedRange;
 use read_write_utils::hash::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
+use result_result_try::try2;
+use rompatcher_err::*;
 use std::borrow::Cow;
 use std::fmt::Formatter;
 use std::hash::Hasher;
@@ -13,6 +13,7 @@ use std::io::prelude::*;
 use std::num;
 use std::ops::Range;
 use std::{cmp, io};
+use PatchingError::*;
 
 pub const MAGIC: &[u8] = b"PPF";
 
@@ -26,14 +27,14 @@ pub fn patch(
   patch: &mut (impl BufRead + Seek),
   output: &mut impl BufWrite,
   strict: bool,
-) -> Result<(), patch::Error> {
+) -> io::Result<Result<(), PatchingError>> {
   let mut patch = PositionTracker::from_start(patch);
   let Format {
     block_check,
     can_have_footer,
     has_undo_data,
     rom_offset_type,
-  } = Format::parse_and_validate(&mut patch)?;
+  } = try2!(Format::parse_and_validate(&mut patch)?);
   let mut rom = PositionTracker::from_start(rom);
 
   let offset_size: usize = rom_offset_type.size();
@@ -47,54 +48,60 @@ pub fn patch(
   loop {
     let offset: u64 = {
       let mut buf = [0u8; size_of::<u64>()];
-      u64::from_le_bytes(
+      u64::from_le_bytes(try2!(
         patch
           .read_exact(&mut buf[..offset_size])
           .map(|_| buf)
-          .map_err(patch_err)?,
-      )
+          .map_patch_err()?
+      ))
     };
 
     if can_have_footer && offset == magic_offset {
       break;
     }
 
-    let hunk_length: u8 = patch.read_u8().map_err(patch_err)?;
-    num::NonZeroU8::new(hunk_length).ok_or(BadPatch)?;
+    let hunk_length: u8 = try2!(patch.read_u8().map_patch_err()?);
+    try2!(num::NonZeroU8::new(hunk_length).ok_or(BadPatch));
 
     // If the patch includes a block check, we need to compare a specific 1 KB
     // block of the ROM to the block that was included in the patch header.
     // Hash the ROM block when the patching loop reaches it, then compare its
     // crc32 to hash of the patch block that was calculated earlier.
     let initial_rom_position: u64 = rom.position();
-    let rom_range = CheckedRange::new(initial_rom_position..offset).ok_or(BadPatch)?;
+    let rom_range = try2!(CheckedRange::new(initial_rom_position..offset).ok_or(BadPatch));
     match &block_check {
       None => {
-        rom.copy_until(offset, output).map_err(rom_err)?;
+        try2!(rom.copy_until(offset, output).map_rom_err()?);
       }
       Some(BlockCheck { region, crc32 }) => {
         if !rom_range.overlaps(region) {
-          rom.copy_until(offset, output).map_err(rom_err)?;
+          try2!(rom.copy_until(offset, output).map_rom_err()?);
         } else {
           // Copy until the start of the block check region.
-          rom
-            .copy_until(cmp::max(region.start, initial_rom_position), output)
-            .map_err(rom_err)?;
+          try2!(
+            rom
+              .copy_until(cmp::max(region.start, initial_rom_position), output)
+              .map_rom_err()?
+          );
           // Hash and copy until the patch offset or the end of the block check
           // region, whichever comes first.
-          rom
-            .take_from_inner_until(cmp::min(offset, region.end), |take| {
-              take.exactly(|rom| {
-                let mut hashing_reader = HashingReader::new(rom, &mut hasher);
-                io::copy(&mut hashing_reader, output)
+          try2!(
+            rom
+              .take_from_inner_until(cmp::min(offset, region.end), |take| {
+                take.exactly(|rom| {
+                  let mut hashing_reader = HashingReader::new(rom, &mut hasher);
+                  io::copy(&mut hashing_reader, output)
+                })
               })
-            })
-            .map_err(rom_err)?;
+              .map_rom_err()?
+          );
           // If we reached the end of the block check region first, copy from
           // the ROM until the patch offset is reached.
-          rom
-            .copy_until(cmp::max(offset, rom.position()), output)
-            .map_err(rom_err)?;
+          try2!(
+            rom
+              .copy_until(cmp::max(offset, rom.position()), output)
+              .map_rom_err()?
+          );
         }
 
         // If we finished hashing the block check region on this iteration,
@@ -102,16 +109,18 @@ pub fn patch(
         if (initial_rom_position..=rom.position()).contains(&region.end) {
           let rom_block_crc32 = hasher.finish();
           if strict && rom_block_crc32 != u64::from(*crc32) {
-            return Err(WrongInputFile);
+            return Ok(Err(WrongInputFile));
           }
         }
       }
     }
 
     debug_assert_eq!(rom.position(), offset);
-    patch
-      .copy_exactly(u64::from(hunk_length), output)
-      .map_err(patch_err)?;
+    try2!(
+      patch
+        .copy_exactly(u64::from(hunk_length), output)
+        .map_patch_err()?
+    );
 
     if has_undo_data {
       patch.seek_relative(hunk_length.into())?;
@@ -123,10 +132,10 @@ pub fn patch(
   }
 
   if rom.position() == 0 {
-    return Err(BadPatch);
+    return Ok(Err(BadPatch));
   }
 
-  Ok(())
+  Ok(Ok(()))
 }
 
 /// Details about the format of a PPF file.
@@ -148,14 +157,16 @@ impl Format {
   /// the patch data. No guarantees are made about its cursor position otherwise.
   pub fn parse_and_validate(
     patch: &mut PositionTracker<impl BufRead + Seek>,
-  ) -> Result<Format, patch::Error> {
+  ) -> io::Result<Result<Format, PatchingError>> {
     // applyppf3 parses the magic string to obtain the version number and
     // ignores the dedicated version byte. However, ROM Patcher JS checks both
     // and throws an error if they don't match. Given the latter's widespread
     // use, it's probably safe to follow its lead.
-    let version = Version::try_from(&patch.read_array::<5>().map_err(patch_err)?)?;
-    if version != Version::try_from(patch.read_u8().map_err(patch_err)?)? {
-      return Err(BadPatch);
+    let version = try2!(Version::try_from(
+      &(try2!(patch.read_array::<5>().map_patch_err()?))
+    ));
+    if version != try2!(Version::try_from(try2!(patch.read_u8().map_patch_err()?))) {
+      return Ok(Err(BadPatch));
     }
 
     // The PPF docs don't specify the encoding of the description or the
@@ -169,7 +180,7 @@ impl Format {
     let description: &str = description.trim_end();
     log::debug!("PPF patch description: {description}");
 
-    Ok(match version {
+    Ok(Ok(match version {
       Version::V1 => Format {
         can_have_footer: false,
         rom_offset_type: RomOffsetType::U32,
@@ -179,7 +190,10 @@ impl Format {
       Version::V2 => {
         // File size checks were deprecated in V3 because they were unreliable,
         // but an absent file size might indicate an invalid PPF file.
-        num::NonZeroU32::try_from(patch.read_u32::<LE>()?).map_err(|_| BadPatch)?;
+        try2!(
+          num::NonZeroU32::try_from(try2!(patch.read_u32::<LE>().map_patch_err()?))
+            .map_err(|_| BadPatch)
+        );
         let mut hashing_writer = HashingWriter::new(io::sink(), crc32fast::Hasher::new());
         patch.take_from_inner(BLOCK_CHECK_LENGTH as u64, |take| {
           take.exactly(|patch| io::copy(patch, &mut hashing_writer))
@@ -197,13 +211,17 @@ impl Format {
         }
       }
       Version::V3 => {
-        let image_type = ImageType::try_from(patch.read_u8()?)?;
-        let has_block_check = (patch.read_u8()?)
-          .try_into_bool()
-          .map_err(|_| patch::Error::BadPatch)?;
-        let has_undo_data = (patch.read_u8()?)
-          .try_into_bool()
-          .map_err(|_| patch::Error::BadPatch)?;
+        let image_type = try2!(ImageType::try_from(try2!(patch.read_u8().map_patch_err()?)));
+        let has_block_check = try2!(
+          try2!(patch.read_u8().map_patch_err()?)
+            .try_into_bool()
+            .map_err(|_| BadPatch)
+        );
+        let has_undo_data = try2!(
+          try2!(patch.read_u8().map_patch_err()?)
+            .try_into_bool()
+            .map_err(|_| BadPatch)
+        );
         patch.seek_relative(1)?; // Unused in V3
         let block_check = match has_block_check {
           false => None,
@@ -227,7 +245,7 @@ impl Format {
           block_check,
         }
       }
-    })
+    }))
   }
 
   /// Finds the end of the PPF2 or PPF3 patch data. PPF2 and PPF3 files may
@@ -393,20 +411,20 @@ impl std::fmt::Display for Version {
 }
 
 impl TryFrom<&[u8; 5]> for Version {
-  type Error = patch::Error;
+  type Error = PatchingError;
 
   fn try_from(value: &[u8; 5]) -> Result<Self, Self::Error> {
     match value {
       b"PPF10" => Ok(Version::V1),
       b"PPF20" => Ok(Version::V2),
       b"PPF30" => Ok(Version::V3),
-      _ => Err(patch::Error::BadPatch),
+      _ => Err(BadPatch),
     }
   }
 }
 
 impl TryFrom<u8> for Version {
-  type Error = patch::Error;
+  type Error = PatchingError;
 
   fn try_from(value: u8) -> Result<Self, Self::Error> {
     match value {
@@ -436,13 +454,13 @@ impl ImageType {
 }
 
 impl TryFrom<u8> for ImageType {
-  type Error = patch::Error;
+  type Error = PatchingError;
 
   fn try_from(value: u8) -> Result<Self, Self::Error> {
     match value {
       0 => Ok(Self::BIN),
       1 => Ok(Self::GI),
-      _ => Err(patch::Error::BadPatch),
+      _ => Err(BadPatch),
     }
   }
 }
@@ -476,5 +494,27 @@ impl RomOffsetType {
       Self::U32 => size_of::<u32>(),
       Self::U64 => size_of::<u64>(),
     }
+  }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PatchingError {
+  #[error("The patch file is corrupt.")]
+  BadPatch,
+  #[error("The patch is not meant for this file.")]
+  WrongInputFile,
+  #[error(
+    "The patch is not meant for this file, and can't be applied due to the file being too small."
+  )]
+  InputFileTooSmall,
+}
+
+impl PatchingIOErrors for PatchingError {
+  fn bad_patch() -> Self {
+    BadPatch
+  }
+
+  fn input_file_too_small() -> Self {
+    InputFileTooSmall
   }
 }

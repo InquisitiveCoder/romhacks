@@ -1,20 +1,22 @@
 //! Format documentation: https://www.romhacking.net/documents/392/
 
 use crate::crc::{CRC32Hasher, Crc32};
-use crate::patch::byuu::varint::ReadNumber;
+use crate::patch::byuu::varint::{DecodingError, ReadNumber};
 use crate::patch::byuu::*;
-use crate::patch::Error::{AlreadyPatched, BadPatch, WrongInputFile};
-use crate::patch::{patch_err, rom_err, Error};
 use aligned_vec::{avec, AVec, CACHELINE_ALIGN};
-use byteorder::{LittleEndian, ReadBytesExt};
+use byteorder::{ReadBytesExt, LE};
 use ::rayon::prelude::*;
 use read_write_utils::hash::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
+use result_result_try::try2;
+use rompatcher_err::prelude::*;
 use std::cmp::Ordering;
 use std::io::prelude::*;
 use std::io::ErrorKind::Interrupted;
 use std::{io, iter};
 use wide::u8x16;
+use PatchingError as E;
+use PatchingError::*;
 
 pub const MAGIC: &[u8] = b"UPS";
 
@@ -25,22 +27,24 @@ pub fn patch(
   patch: &mut (impl BufRead + Seek),
   output: &mut impl BufWrite,
   strict: bool,
-) -> Result<PatchReport, Error> {
-  let start_of_footer: u64 = patch
-    .seek(io::SeekFrom::End(-(FOOTER_LEN as i64)))
-    .map_err(patch_err)?;
+) -> io::Result<Result<PatchReport, PatchingError>> {
+  let start_of_footer: u64 = try2!(
+    patch
+      .seek(io::SeekFrom::End(-(FOOTER_LEN as i64)))
+      .map_patch_err::<E>()?
+  );
   patch.seek(io::SeekFrom::Start(0))?;
 
   let mut rom = PositionTracker::from_start(HashingReader::new(rom, CRC32Hasher::new()));
   let mut patch = PositionTracker::from_start(HashingReader::new(patch, CRC32Hasher::new()));
   let mut output = PositionTracker::from_start(HashingWriter::new(output, CRC32Hasher::new()));
 
-  if &patch.read_array::<4>().map_err(patch_err)? != b"UPS1" {
-    return Err(BadPatch);
+  if &(try2!(patch.read_array::<4>().map_patch_err::<PatchingError>()?)) != b"UPS1" {
+    return Ok(Err(BadPatch));
   }
 
-  let expected_source_size: u64 = patch.read_number().map_err(patch_err)?;
-  let expected_target_size: u64 = patch.read_number().map_err(patch_err)?;
+  let expected_source_size: u64 = try2!(patch.read_number()?);
+  let expected_target_size: u64 = try2!(patch.read_number()?);
 
   let patch_result = apply_patch(
     &mut rom,
@@ -52,23 +56,27 @@ pub fn patch(
 
   // Check if the patch is valid before returning any errors from apply_patch.
   // An InputFileTooSmall error is a false positive if the patch is corrupt.
-  patch.copy_until(start_of_footer, &mut io::sink())?;
-  let expected_source_crc32 = Crc32::new(patch.read_u32::<LittleEndian>().map_err(patch_err)?);
-  let expected_target_crc32 = Crc32::new(patch.read_u32::<LittleEndian>().map_err(patch_err)?);
+  try2!(
+    patch
+      .copy_until(start_of_footer, &mut io::sink())
+      .map_patch_err::<E>()?
+  );
+  let expected_source_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
+  let expected_target_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
   let patch_internal_crc32 = patch.hasher().finish();
-  let expected_patch_crc32 = Crc32::new(patch.read_u32::<LittleEndian>().map_err(patch_err)?);
+  let expected_patch_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
   let patch_whole_file_crc32 = patch.hasher().finish();
   if patch_internal_crc32 != expected_patch_crc32 {
-    return Err(BadPatch);
+    return Ok(Err(BadPatch));
   }
-  patch_result?;
+  try2!(patch_result?);
 
   // Patching succeeded.
 
   let actual_target_crc32 = output.hasher().finish();
   let actual_target_size = output.position();
   if actual_target_size != expected_target_size {
-    return Err(BadPatch);
+    return Ok(Err(BadPatch));
   }
 
   // Read and hash the rest of the file.
@@ -79,9 +87,9 @@ pub fn patch(
   if strict {
     if actual_source_crc32 != expected_source_crc32 || actual_source_size != expected_source_size {
       return if actual_source_crc32 == expected_target_crc32 {
-        Err(AlreadyPatched)
+        Ok(Err(AlreadyPatched))
       } else {
-        Err(WrongInputFile)
+        Ok(Err(WrongInputFile))
       };
     }
 
@@ -90,11 +98,11 @@ pub fn patch(
       // the input file is wrong but its checksum collided with the correct file
       // by chance. That's more likely than a corrupted patch having a checksum
       // collision AND passing every single validation check up to this point.
-      return Err(WrongInputFile);
+      return Ok(Err(WrongInputFile));
     }
   }
 
-  Ok(PatchReport {
+  Ok(Ok(PatchReport {
     expected_source_crc32,
     actual_source_crc32,
     expected_target_crc32,
@@ -105,7 +113,7 @@ pub fn patch(
     actual_source_size,
     expected_target_size,
     actual_target_size,
-  })
+  }))
 }
 
 fn apply_patch(
@@ -114,33 +122,42 @@ fn apply_patch(
   mut output: &mut PositionTracker<HashingWriter<&mut impl BufWrite, CRC32Hasher>>,
   start_of_footer: &u64,
   expected_target_size: u64,
-) -> Result<(), Error> {
+) -> io::Result<Result<(), PatchingError>> {
   let mut output_buf: AVec<u8> = avec![];
   let mut is_subsequent_iteration = false;
   loop {
-    let relative_offset: u64 = patch.read_number().map_err(patch_err)?;
-    rom
-      // As a minor optimization, apply_patch_block doesn't XOR the 0x00
-      // delimiter with the corresponding ROM byte. Therefore, one extra byte
-      // needs to be copied on subsequent iterations.
-      .copy_to_other_exactly(
-        u64::from(is_subsequent_iteration) + relative_offset,
-        &mut output,
-      )
-      .map_err(rom_err)?;
-    apply_patch_block(&mut rom, &mut patch, &mut output, &mut output_buf)?;
+    let relative_offset: u64 = try2!(patch.read_number()?);
+    try2!(
+      rom
+        // As a minor optimization, apply_patch_block doesn't XOR the 0x00
+        // delimiter with the corresponding ROM byte. Therefore, one extra byte
+        // needs to be copied on subsequent iterations.
+        .copy_to_other_exactly(
+          u64::from(is_subsequent_iteration) + relative_offset,
+          &mut output,
+        )
+        .map_rom_err::<E>()?
+    );
+    try2!(apply_patch_block(
+      &mut rom,
+      &mut patch,
+      &mut output,
+      &mut output_buf
+    )?);
     match patch.position().cmp(&start_of_footer) {
       Ordering::Less => is_subsequent_iteration = true,
       Ordering::Equal => break, // reached the footer
-      Ordering::Greater => return Err(BadPatch),
+      Ordering::Greater => return Ok(Err(BadPatch)),
     }
   }
 
-  rom
-    .copy_to_other_until(expected_target_size, &mut output)
-    .map_err(patch_err)?;
+  try2!(
+    rom
+      .copy_to_other_until(expected_target_size, &mut output)
+      .map_rom_err::<E>()?
+  );
 
-  Ok(())
+  Ok(Ok(()))
 }
 
 /// Applies a single patch block (offset + XOR bytes) to the output.
@@ -149,15 +166,15 @@ fn apply_patch_block(
   patch: &mut impl BufRead,
   output: &mut impl BufWrite,
   output_buf: &mut AVec<u8>,
-) -> Result<(), Error> {
+) -> io::Result<Result<(), PatchingError>> {
   // Keep XORing the patch's read buffer with the  corresponding ROM bytes until
   // the end-of-block delimiter (0x00) is found.
   loop {
     let patch_read_buf: &[u8] = match patch.fill_buf() {
-      Ok(buf) if buf.is_empty() => return Err(BadPatch), // EOF
+      Ok(buf) if buf.is_empty() => return Ok(Err(BadPatch)), // EOF
       Ok(buf) => buf,
       Err(e) if e.kind() == Interrupted => continue,
-      Err(e) => Err(e)?,
+      Err(e) => return Err(e),
     };
 
     // memchr uses SIMD to efficiently find the 1st occurrence of 0x00.
@@ -183,7 +200,8 @@ fn apply_patch_block(
       break;
     }
   }
-  Ok(())
+
+  Ok(Ok(()))
 }
 
 /// Uses [`rayon`] to XOR `patch_hunk` and `rom_hunk` in parallel.
@@ -216,6 +234,36 @@ fn xor_simd((patch_chunk, output_chunk): (&[u8], &mut [u8])) {
   let result: [u8; 16] = (to_simd(patch_chunk) ^ to_simd(output_chunk)).to_array();
   let result: &[u8] = &result[..output_chunk.len()];
   output_chunk.copy_from_slice(result);
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PatchingError {
+  #[error("The patch file is corrupt.")]
+  BadPatch,
+  #[error("The patch is not meant for this file.")]
+  WrongInputFile,
+  #[error(
+    "The patch is not meant for this file, and can't be applied due to the file being too small."
+  )]
+  InputFileTooSmall,
+  #[error("This patch has already been applied to the input file.")]
+  AlreadyPatched,
+}
+
+impl From<DecodingError> for PatchingError {
+  fn from(_: DecodingError) -> Self {
+    BadPatch
+  }
+}
+
+impl PatchingIOErrors for PatchingError {
+  fn bad_patch() -> Self {
+    BadPatch
+  }
+
+  fn input_file_too_small() -> Self {
+    InputFileTooSmall
+  }
 }
 
 #[cfg(test)]

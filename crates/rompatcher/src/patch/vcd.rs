@@ -1,12 +1,14 @@
 use crate::patch::vcd::cache::AddressCache;
-use crate::patch::{patch_err, rom_err, Error};
 use byteorder::ReadBytesExt;
 use io::SeekFrom;
 use num_traits::{CheckedMul, Num};
 use read_write_utils::prelude::*;
+use result_result_try::try2;
+use rompatcher_err::*;
 use std::io;
 use std::io::prelude::*;
 use std::num::NonZeroU8;
+use PatchingError::*;
 
 /// The magic string for Vcdiff patch files.
 ///
@@ -21,47 +23,47 @@ pub fn patch<O>(
   rom: &mut (impl BufRead + Seek),
   patch: &mut (impl BufRead + Seek),
   output: &mut O,
-) -> Result<(), Error>
+) -> io::Result<Result<(), PatchingError>>
 where
   O: BufWrite + Seek,
   for<'a> &'a mut O::Inner: Read + Write + Seek,
 {
-  let mut rom = PositionTracker::from_start(rom);
+  let rom = PositionTracker::from_start(rom);
   let mut patch = PositionTracker::from_start(patch);
-  let mut output = PositionTracker::from_start(output);
+  let output = PositionTracker::from_start(output);
 
   // header
-  if &patch.read_array::<3>().map_err(patch_err)? != MAGIC {
-    return Err(Error::BadPatch);
+  if &(try2!(patch.read_array::<3>().map_patch_err()?)) != MAGIC {
+    return Ok(Err(BadPatch));
   }
 
-  let version = patch.read_u8().map_err(patch_err)?;
+  let version = try2!(patch.read_u8().map_patch_err()?);
   if version != 0 {
-    return Err(Error::UnsupportedPatchFeature);
+    return Ok(Err(UnsupportedPatchFeature));
   }
 
-  let hdr_indicator = patch.read_u8().map_err(patch_err)?;
+  let hdr_indicator = try2!(patch.read_u8().map_patch_err()?);
   if hdr_indicator & (VCD_CODETABLE | VCD_DECOMPRESS) != 0 {
-    return Err(Error::UnsupportedPatchFeature);
+    return Ok(Err(UnsupportedPatchFeature));
   }
 
   if hdr_indicator & HAS_APPHEADER != 0 {
     // Skip over the app header.
-    let header_size: u32 = patch.read_integer().map_err(patch_err)?;
+    let header_size: u32 = try2!(patch.read_integer().map_patch_err()?);
     patch.seek_relative(i64::from(header_size))?;
   }
 
   let mut patcher = Patcher::new(rom, patch, output);
   // window sections
   loop {
-    patcher.process_window()?;
+    try2!(patcher.process_window()?);
     if patcher.reached_eof()? {
       break;
     }
     patcher.clear_buffers();
   }
 
-  Ok(())
+  Ok(Ok(()))
 }
 
 struct Patcher<R, P, O> {
@@ -90,83 +92,88 @@ where
     }
   }
 
-  fn process_window(&mut self) -> Result<(), Error> {
+  fn process_window(&mut self) -> io::Result<Result<(), PatchingError>> {
     let Files { rom, patch, output } = &mut self.files;
     let buffers = &mut self.buffers;
 
-    let win_indicator = patch.read_u8().map_err(patch_err)?;
+    let win_indicator = try2!(patch.read_u8().map_patch_err()?);
     let source_window_len = match win_indicator {
       0 => 0,
       Self::VCD_SOURCE => {
-        let source_len: u32 = patch.read_integer().map_err(patch_err)?;
-        let source_position: u64 = patch.read_integer().map_err(patch_err)?;
+        let source_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+        let source_position: u64 = try2!(patch.read_integer().map_patch_err()?);
         rom.seek(SeekFrom::Start(source_position))?;
-        rom
-          .take(source_len as u64)
-          .exactly(|rom| io::copy(rom, &mut buffers.superstring))
-          .map_err(rom_err)?;
+        try2!(
+          rom
+            .take(source_len as u64)
+            .exactly(|rom| io::copy(rom, &mut buffers.superstring))
+            .map_rom_err()?
+        );
         source_len
       }
       Self::VCD_TARGET => {
-        let source_len: u32 = patch.read_integer().map_err(patch_err)?;
-        let source_position: u64 = patch.read_integer().map_err(patch_err)?;
+        let source_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+        let source_position: u64 = try2!(patch.read_integer().map_patch_err()?);
         output.seek(SeekFrom::Start(source_position))?;
-        output
-          .with_inner(
-            |inner| inner.inner_mut(),
-            |output| {
+        try2!(
+          output
+            .with_bufwriter_inner(|output: &mut PositionTracker<&mut O::Inner>| {
               output
                 .take(source_len as u64)
-                .exactly(|output| io::copy(output, &mut buffers.superstring))?;
+                .exactly(|output| output.copy_to_slice(&mut buffers.superstring))?;
               output.seek(SeekFrom::End(0))
-            },
-          )
-          .map_err(patch_err)?;
+            })
+            .map_patch_err()?
+        );
+
         source_len
       }
-      _ => return Err(Error::BadPatch),
+      _ => return Ok(Err(BadPatch)),
     };
 
     let encoding_len: u32 = patch.read_integer()?;
     let mut patch = patch.take(encoding_len as u64);
 
-    let target_window_len: u32 = patch.read_integer().map_err(patch_err)?;
+    let target_window_len: u32 = try2!(patch.read_integer().map_patch_err()?);
     buffers
       .superstring
       .resize(buffers.superstring.len() + target_window_len as usize, 0);
 
-    let delta_indicator: u8 = patch.read_u8().map_err(patch_err)?;
+    let delta_indicator: u8 = try2!(patch.read_u8().map_patch_err()?);
     if delta_indicator != 0 {
       // A valid patch can't reach this condition.
       // The flags in this byte indicate which of the buffers are compressed and
       // should only be set if the VC_DECOMPRESS bit was set. If VC_DECOMPRESS
       // was set, applying the patch will return UnsupportedPatchFeature while
       // processing the header.
-      return Err(Error::BadPatch);
+      return Ok(Err(BadPatch));
     }
 
-    let data_len: u32 = patch.read_integer().map_err(patch_err)?;
-    let instructions_len: u32 = patch.read_integer().map_err(patch_err)?;
-    let addresses_len: u32 = patch.read_integer().map_err(patch_err)?;
-    (&mut patch)
-      .take(data_len as u64)
-      .exactly(|patch| io::copy(patch, &mut buffers.add_and_run_data))
-      .map_err(patch_err)?;
-    (&mut patch)
-      .take(instructions_len as u64)
-      .exactly(|patch| io::copy(patch, &mut buffers.instructions_and_sizes))
-      .map_err(patch_err)?;
-    (&mut patch)
-      .take(addresses_len as u64)
-      .exactly(|patch| io::copy(patch, &mut buffers.copy_addresses))
-      .map_err(patch_err)?;
+    let data_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+    let instructions_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+    let addresses_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+    try2!(
+      (&mut patch)
+        .take(data_len as u64)
+        .exactly(|patch| io::copy(patch, &mut buffers.add_and_run_data))
+        .map_patch_err()?
+    );
+    try2!(
+      (&mut patch)
+        .take(instructions_len as u64)
+        .exactly(|patch| io::copy(patch, &mut buffers.instructions_and_sizes))
+        .map_patch_err()?
+    );
+    try2!(
+      (&mut patch)
+        .take(addresses_len as u64)
+        .exactly(|patch| io::copy(patch, &mut buffers.copy_addresses))
+        .map_patch_err()?
+    );
 
     let mut cursors = Cursors::new(buffers, source_window_len);
     loop {
-      let instruction_code = cursors
-        .instructions_and_sizes
-        .read_u8()
-        .map_err(patch_err)?;
+      let instruction_code = try2!(cursors.instructions_and_sizes.read_u8().map_patch_err()?);
       let (first, second) = Self::decode_instruction_pair(instruction_code);
       Self::execute_instruction(&mut cursors, first)?;
       Self::execute_instruction(&mut cursors, second)?;
@@ -176,48 +183,56 @@ where
     }
     output.write_all(cursors.superstring.target_window())?;
 
-    Ok(())
+    Ok(Ok(()))
   }
 
-  fn execute_instruction(cursors: &mut Cursors<'_>, instruction: Instruction) -> Result<(), Error> {
+  fn execute_instruction(
+    cursors: &mut Cursors<'_>,
+    instruction: Instruction,
+  ) -> io::Result<Result<(), PatchingError>> {
     match instruction {
       Instruction::Noop => {}
       Instruction::Run => {
-        let byte = cursors.add_and_run_data.read_u8().map_err(patch_err)?;
-        let size: u32 = cursors
-          .instructions_and_sizes
-          .read_integer()
-          .map_err(patch_err)?;
-        (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
-          io::copy(&mut io::repeat(byte).take(size as u64), &mut dest)
-        })?;
+        let byte = try2!(cursors.add_and_run_data.read_u8().map_patch_err()?);
+        let size: u32 = try2!(
+          cursors
+            .instructions_and_sizes
+            .read_integer()
+            .map_patch_err()?
+        );
+        try2!(
+          (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
+            io::copy(&mut io::repeat(byte).take(size as u64), &mut dest)
+          })?
+        );
       }
       Instruction::Add { size } => {
         let size: u32 = cursors.read_instruction_size(size)?;
-        (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
-          (&mut cursors.add_and_run_data)
-            .take(size as u64)
-            .exactly(|data| io::copy(data, &mut dest))
-        })?;
+        try2!(
+          (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
+            (&mut cursors.add_and_run_data)
+              .take(size as u64)
+              .exactly(|data| io::copy(data, &mut dest))
+          })?
+        );
       }
       Instruction::Copy { size, mode } => {
-        let size: u32 = cursors.read_instruction_size(size).map_err(patch_err)?;
+        let size: u32 = try2!(cursors.read_instruction_size(size).map_patch_err()?);
         let here: u32 = cursors.superstring.target_window_position();
-        let address = cursors
-          .copy_addresses
-          .decode(here, mode)
-          .map_err(patch_err)?;
-        (cursors.superstring).write_bytes(size, |source: &[u8], mut dest: &mut [u8]| {
-          let sequence_len = u32::min(address + size, source.len() as u32) as usize;
-          let periodic_sequence: &[u8] = &source[address as usize..sequence_len];
-          (&mut read_write_utils::repeat::RepeatSlice::new(periodic_sequence))
-            .take(sequence_len as u64)
-            .exactly(|data| io::copy(data, &mut dest))?;
-          Ok(())
-        })?;
+        let address = try2!(cursors.copy_addresses.decode(here, mode).map_patch_err()?);
+        try2!(
+          (cursors.superstring).write_bytes(size, |source: &[u8], mut dest: &mut [u8]| {
+            let sequence_len = u32::min(address + size, source.len() as u32) as usize;
+            let periodic_sequence: &[u8] = &source[address as usize..sequence_len];
+            (&mut read_write_utils::repeat::RepeatSlice::new(periodic_sequence))
+              .take(sequence_len as u64)
+              .exactly(|data| io::copy(data, &mut dest))?;
+            Ok(())
+          })?
+        );
       }
     }
-    Ok(())
+    Ok(Ok(()))
   }
 
   pub fn reached_eof(&mut self) -> io::Result<bool> {
@@ -351,13 +366,13 @@ impl<'a> WindowCursor<'a> {
     &mut self,
     size: u32,
     update_fn: impl FnOnce(&[u8], &mut [u8]) -> io::Result<T>,
-  ) -> Result<T, Error> {
+  ) -> io::Result<Result<T, PatchingError>> {
     let position: u32 = self.position();
     let (written, unwritten): (&[u8], &mut [u8]) =
-      self.split_for_write(size).ok_or(Error::BadPatch)?;
-    let result = update_fn(written, unwritten).map_err(patch_err)?;
+      try2!(self.split_for_write(size).ok_or(BadPatch));
+    let result = try2!(update_fn(written, unwritten).map_patch_err()?);
     self.cursor.set_position((position + size) as u64);
-    Ok(result)
+    Ok(Ok(result))
   }
 
   fn split_for_write(&mut self, size: u32) -> Option<(&[u8], &mut [u8])> {
@@ -537,4 +552,28 @@ const fn set_msb<const N: usize>(arr: [u8; N]) -> [u8; N] {
     i += 1;
   }
   result
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PatchingError {
+  #[error("The patch file is corrupt.")]
+  BadPatch,
+  #[error("The patch is not meant for this file.")]
+  WrongInputFile,
+  #[error(
+    "The patch is not meant for this file, and can't be applied due to the file being too small."
+  )]
+  InputFileTooSmall,
+  #[error("Unsupported patch.")]
+  UnsupportedPatchFeature,
+}
+
+impl PatchingIOErrors for PatchingError {
+  fn bad_patch() -> Self {
+    BadPatch
+  }
+
+  fn input_file_too_small() -> Self {
+    InputFileTooSmall
+  }
 }

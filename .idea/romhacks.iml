@@ -6,6 +6,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/range-utils/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/read-write-utils/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher-err/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/result-result-try/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/checked-signed-diff/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/range-utils/target" />

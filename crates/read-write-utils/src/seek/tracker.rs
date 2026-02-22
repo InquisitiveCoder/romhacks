@@ -78,14 +78,11 @@ impl<T> PositionTracker<T> {
   /// stream _must_ be at position 0 when the tracker is created.
   ///
   /// Performing I/O operations directly on the inner stream (e.g. via
-  /// [`BufWrite::inner_mut`]) will also desynchronize the calculated
-  /// position. [`PositionTracker::with_inner`] can be used to manipulate
-  /// the inner stream without losing track of its position.
+  /// [`BufWrite::inner_mut`]) will also desynchronize the calculated position.
   ///
   /// Finally, be aware that many [`Seek`] implementations allow seeking past
-  /// the end of the stream and return an out-of-bound position from
-  /// [`Seek::stream_position()`]. This method will likewise return
-  /// out-of-bounds positions in such cases.
+  /// EOF and return such positions from [`Seek::stream_position()`]. It's
+  /// likewise not an error for this method to positions beyond EOF.
   ///
   /// [1]: Read::read
   /// [2]: Write::write
@@ -108,34 +105,6 @@ impl<T> PositionTracker<T> {
   /// [`Self::position`].
   pub fn into_parts(self) -> (T, u64) {
     (self.inner, self.position)
-  }
-
-  /// Consumes this [`PositionTracker`] and returns a new one with the same
-  /// position but a different inner stream.
-  pub fn map_inner<R>(self, f: impl FnOnce(T) -> R) -> PositionTracker<R> {
-    PositionTracker::<R>::with_known_position(self.position, f(self.inner))
-  }
-
-  /// Performs I/O operations on this [`PositionTracker`]'s inner stream while
-  /// tracking position changes.
-  ///
-  /// Specifically, a new tracker will be created with `self`'s position and the
-  /// result of applying `mapper` to a reference to the inner stream. Then,
-  /// `action` is called with a reference to the new mapper, and `self` is
-  /// updated with the borrowed tracker's position.
-  ///
-  /// This function will return the result of calling `action`.
-  pub fn with_inner<I, R, F, G>(&mut self, mapper: F, action: G) -> Result<R>
-  where
-    I: ?Sized,
-    F: FnOnce(&mut T) -> &mut I,
-    G: FnOnce(&mut PositionTracker<&mut I>) -> Result<R>,
-  {
-    let mut inner_tracker =
-      PositionTracker::with_known_position(self.position, mapper(&mut self.inner));
-    let result = action(&mut inner_tracker);
-    self.position = inner_tracker.position;
-    result
   }
 
   fn increment_position(&mut self, amt: impl TryInto<u64>) {
@@ -377,7 +346,7 @@ impl<W: BufWrite> PositionTracker<W> {
   ///
   /// A noteworthy use case this function facilitates is reading from a file
   /// wrapped by a [`BufWriter`].
-  pub fn with_bufwrite_inner<F, R>(&mut self, f: F) -> Result<R>
+  pub fn with_bufwriter_inner<F, R>(&mut self, f: F) -> Result<R>
   where
     F: FnOnce(&mut PositionTracker<&mut W::Inner>) -> Result<R>,
   {
@@ -456,9 +425,10 @@ impl<T> Deref for PositionTracker<T> {
 }
 
 pub trait PositionTrackerReadExt: Read {
-  /// Equivalent to [`PositionTracker::copy_to_inner_from`]. The only advantage
-  /// of this method is that the order the reader and writer is consistent with
-  /// [`copy`].
+  /// Equivalent to [`PositionTracker::copy_to_inner_from`].
+  ///
+  /// The only advantage of this method is that the order the reader and writer
+  /// is consistent with [`copy`].
   fn copy_to_inner_of(&mut self, writer: &mut PositionTracker<impl Write>) -> Result<u64> {
     writer.copy_to_inner_from(self)
   }

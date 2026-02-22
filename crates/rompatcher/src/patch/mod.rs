@@ -1,4 +1,4 @@
-use crate::crc::{CRC32Hasher, Crc32};
+use crate::crc::CRC32Hasher;
 use crate::error;
 use crate::error::prelude::*;
 use read_write_utils::hash::{HashingReader, HashingWriter, MonotonicHashingReader};
@@ -6,7 +6,7 @@ use read_write_utils::prelude::*;
 use std::fmt;
 use std::io;
 use std::io::prelude::*;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::SeekFrom;
 use std::ops::Deref;
 
 pub mod bps;
@@ -17,26 +17,6 @@ pub mod ups;
 pub mod vcd;
 
 pub use self::err::*;
-
-fn rom_err(err: io::Error) -> Error {
-  // InvalidInput will occur when a smaller file offset is encountered in a
-  // patch format where input file offsets should only increase.
-  // See PositionTracker::take_from_inner_until
-  match err.kind() {
-    io::ErrorKind::InvalidInput => Error::BadPatch,
-    io::ErrorKind::UnexpectedEof => Error::InputFileTooSmall,
-    _ => Error::IO(err),
-  }
-}
-
-fn patch_err(err: io::Error) -> Error {
-  match err.kind() {
-    io::ErrorKind::InvalidInput => Error::BadPatch,
-    io::ErrorKind::InvalidData => Error::BadPatch,
-    io::ErrorKind::UnexpectedEof => Error::BadPatch,
-    _ => Error::IO(err),
-  }
-}
 
 #[derive(Clone, Debug)]
 pub struct Patch<F> {
@@ -195,7 +175,7 @@ impl Patcher {
     let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
-    ips::patch(&mut rom, &mut patch, &mut output)?;
+    ips::patch(&mut rom, &mut patch, &mut output)??;
     io::copy(&mut rom, &mut io::sink())?;
     Ok(Checksums {
       source_crc32: rom.hasher().finish().value(),
@@ -216,7 +196,8 @@ impl Patcher {
     O: BufWrite,
     for<'a> &'a mut O::Inner: Read + Write + Seek,
   {
-    ups::patch(rom, patch, output, strict).map(|report| Checksums {
+    let report = ups::patch(rom, patch, output, strict)??;
+    Ok(Checksums {
       source_crc32: report.actual_source_crc32.value(),
       patch_crc32: report.patch_whole_file_crc32.value(),
       target_crc32: report.actual_target_crc32.value(),
@@ -235,7 +216,8 @@ impl Patcher {
     O: BufWrite + Seek,
     for<'a> &'a mut O::Inner: Read + Write + Seek,
   {
-    bps::patch(rom, patch, output, strict).map(|report| Checksums {
+    let report = bps::patch(rom, patch, output, strict)??;
+    Ok(Checksums {
       source_crc32: report.actual_source_crc32.value(),
       patch_crc32: report.patch_whole_file_crc32.value(),
       target_crc32: report.actual_target_crc32.value(),
@@ -293,7 +275,7 @@ pub struct Checksums {
 }
 
 mod err {
-  use crate::error::prelude::*;
+  use super::*;
   use std::io;
   use std::io::IntoInnerError;
 
@@ -306,8 +288,6 @@ mod err {
     BadPatch,
     #[error("Unsupported patch.")]
     UnsupportedPatchFeature,
-    #[error("The patch or ROM file is too large.")]
-    FileTooLarge,
     #[error("The patch is not meant for this file.")]
     WrongInputFile,
     #[error(
@@ -337,8 +317,56 @@ mod err {
       }
     }
   }
-}
 
-pub trait HasInternalCrc32 {
-  fn internal_crc32(&self) -> Crc32;
+  impl From<ips::PatchingError> for Error {
+    fn from(err: ips::PatchingError) -> Self {
+      match err {
+        ips::PatchingError::BadPatch => Self::BadPatch,
+        ips::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
+      }
+    }
+  }
+
+  impl From<bps::PatchingError> for Error {
+    fn from(value: bps::PatchingError) -> Self {
+      match value {
+        bps::PatchingError::BadPatch => Self::BadPatch,
+        bps::PatchingError::WrongInputFile => Self::WrongInputFile,
+        bps::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
+        bps::PatchingError::AlreadyPatched => Self::AlreadyPatched,
+      }
+    }
+  }
+
+  impl From<ups::PatchingError> for Error {
+    fn from(value: ups::PatchingError) -> Self {
+      match value {
+        ups::PatchingError::BadPatch => Self::BadPatch,
+        ups::PatchingError::WrongInputFile => Self::WrongInputFile,
+        ups::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
+        ups::PatchingError::AlreadyPatched => Self::AlreadyPatched,
+      }
+    }
+  }
+
+  impl From<ppf::PatchingError> for Error {
+    fn from(value: ppf::PatchingError) -> Self {
+      match value {
+        ppf::PatchingError::BadPatch => Self::BadPatch,
+        ppf::PatchingError::WrongInputFile => Self::WrongInputFile,
+        ppf::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
+      }
+    }
+  }
+
+  impl From<vcd::PatchingError> for Error {
+    fn from(value: vcd::PatchingError) -> Self {
+      match value {
+        vcd::PatchingError::BadPatch => Self::BadPatch,
+        vcd::PatchingError::WrongInputFile => Self::WrongInputFile,
+        vcd::PatchingError::InputFileTooSmall => Self::InputFileTooSmall,
+        vcd::PatchingError::UnsupportedPatchFeature => Self::UnsupportedPatchFeature,
+      }
+    }
+  }
 }

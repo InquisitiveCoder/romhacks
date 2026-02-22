@@ -1085,6 +1085,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 
 [[package]]
+name = "result-result-try"
+version = "0.1.0"
+
+[[package]]
 name = "romhacks"
 version = "0.1.0"
 dependencies = [
@@ -1107,11 +1111,17 @@ dependencies = [
  "rayon",
  "read-write-utils",
  "regex-lite",
+ "result-result-try",
+ "rompatcher-err",
  "thiserror 2.0.18",
  "ulid",
  "url",
  "wide",
 ]
+
+[[package]]
+name = "rompatcher-err"
+version = "0.1.0"
 
 [[package]]
 name = "rustc-demangle"
