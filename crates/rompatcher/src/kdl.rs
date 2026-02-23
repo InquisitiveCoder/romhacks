@@ -1,8 +1,10 @@
-use crate::{crc, mem};
+use crate::mem;
 pub use kdl::*;
 pub use kdl_schema::Schema;
 pub use kdl_schema_check::CheckFailure;
 use polonius_the_crab::*;
+use rompatcher_crc32_utils::Crc32;
+use std::ops::Deref;
 
 pub mod prelude {
   pub use kdl_schema_check::CheckExt;
@@ -86,17 +88,27 @@ impl<'a> ValueRepr for &'a str {
   type Repr = &'a Str;
 }
 
-impl ValueRepr for crc::Crc32 {
+impl ValueRepr for Crc32Wrapper {
   type Repr = Self;
 }
 
-impl From<crc::Crc32> for KdlValue {
-  fn from(crc32: crc::Crc32) -> Self {
+pub struct Crc32Wrapper(pub Crc32);
+
+impl Deref for Crc32Wrapper {
+  type Target = Crc32;
+
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+impl From<Crc32Wrapper> for KdlValue {
+  fn from(crc32: Crc32Wrapper) -> Self {
     KdlValue::String(format!("{:X}", crc32.value()))
   }
 }
 
-impl PartialEq<KdlValue> for crc::Crc32 {
+impl PartialEq<KdlValue> for Crc32Wrapper {
   fn eq(&self, other: &KdlValue) -> bool {
     Some(self.value())
       == other

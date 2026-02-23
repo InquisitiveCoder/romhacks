@@ -113,13 +113,9 @@ pub fn patch(
   Ok(Ok(output.position()))
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PatchingError {
-  #[error("The patch file is corrupt.")]
   BadPatch,
-  #[error(
-    "The patch is not meant for this file, and can't be applied due to the file being too small."
-  )]
   InputFileTooSmall,
 }
 

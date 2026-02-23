@@ -1,4 +1,3 @@
-use crate::crc::WithCrc32;
 use fs_err as fs;
 use read_write_utils::prelude::*;
 use std::io::{BufReader, BufWriter, Take, Write};
@@ -35,11 +34,5 @@ impl<T: HasPath> HasPath for Take<T> {
 impl<T: HasPath> HasPath for PositionTracker<T> {
   fn path(&self) -> &Path {
     self.inner().path()
-  }
-}
-
-impl<T: HasPath> HasPath for WithCrc32<T> {
-  fn path(&self) -> &Path {
-    self.get_ref().path()
   }
 }

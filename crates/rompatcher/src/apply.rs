@@ -1,10 +1,10 @@
-use crate::crc::*;
 use crate::error::prelude::*;
 use crate::fs::HasPath;
 use crate::patch::find_patch_kind;
 use crate::{filename, hack, manifest, patch};
 use fs_err as fs;
 use read_write_utils::DEFAULT_BUF_SIZE;
+use rompatcher_crc32_utils::Crc32;
 use std::io;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};

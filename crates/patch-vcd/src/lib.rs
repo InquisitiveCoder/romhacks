@@ -1,5 +1,5 @@
-use crate::patch::vcd::cache::AddressCache;
 use byteorder::ReadBytesExt;
+use cache::AddressCache;
 use io::SeekFrom;
 use num_traits::{CheckedMul, Num};
 use read_write_utils::prelude::*;
@@ -554,15 +554,10 @@ const fn set_msb<const N: usize>(arr: [u8; N]) -> [u8; N] {
   result
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PatchingError {
-  #[error("The patch file is corrupt.")]
   BadPatch,
-  #[error(
-    "The patch is not meant for this file, and can't be applied due to the file being too small."
-  )]
   InputFileTooSmall,
-  #[error("Unsupported patch.")]
   UnsupportedPatchFeature,
 }
 

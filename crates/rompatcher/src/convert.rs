@@ -18,6 +18,5 @@ impl TryIntoBool for u8 {
   }
 }
 
-#[derive(Clone, Debug, Error)]
-#[error("Value couldn't be converted into a bool.")]
+#[derive(Clone, Debug)]
 pub struct TryIntoBoolError(pub(crate) ());

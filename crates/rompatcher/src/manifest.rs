@@ -1,9 +1,10 @@
 use crate::error::prelude::*;
 use crate::kdl::prelude::*;
-use crate::{crc, hack, kdl, mem};
+use crate::kdl::Crc32Wrapper;
+use crate::{hack, kdl, mem};
 use fs_err as fs;
 use kdl::KdlValue;
-use kdl_schema_check::CheckFailure;
+use rompatcher_crc32_utils::Crc32;
 use std::borrow::Cow;
 use std::io;
 use std::path;
@@ -26,8 +27,8 @@ const VERSION: &str = "version";
 pub fn get_or_create(
   manifest_path: &impl AsRef<path::Path>,
   rom_path: &impl AsRef<path::Path>,
-  rom_crc32: crc::Crc32,
-  patch_digest: crc::Crc32,
+  rom_crc32: Crc32,
+  patch_digest: Crc32,
 ) -> Result<kdl::KdlDocument, GetOrCreateError> {
   monomorphic_get_or_create(
     manifest_path.as_ref(),
@@ -40,8 +41,8 @@ pub fn get_or_create(
 fn monomorphic_get_or_create(
   manifest_path: &path::Path,
   rom_path: &path::Path,
-  rom_digest: crc::Crc32,
-  patch_digest: crc::Crc32,
+  rom_digest: Crc32,
+  patch_digest: Crc32,
 ) -> Result<kdl::KdlDocument, GetOrCreateError> {
   let str = match fs::read_to_string(manifest_path) {
     Ok(str) => str,
@@ -98,9 +99,10 @@ fn create() -> kdl::KdlDocument {
 
 fn validate_file(
   file_node: &kdl::KdlNode,
-  file_crc32: crc::Crc32,
-  patch_crc32: crc::Crc32,
+  file_crc32: Crc32,
+  patch_crc32: Crc32,
 ) -> Result<(), GetOrCreateError> {
+  let patch_crc32 = Crc32Wrapper(patch_crc32);
   let patches: &[kdl::KdlNode] = kdl::unwrap_children(file_node);
   let patch_id = kdl::NodeId::new(PATCH, (CRC_32, patch_crc32));
   if patches.iter().find(|patch| patch_id == **patch).is_some() {
@@ -113,7 +115,7 @@ fn validate_file(
     .and_then(|node| node.get(CRC_32))
     .and_then(KdlValue::as_string)
     .and_then(|str| u32::from_str_radix(str, 16).ok())
-    .map(crc::Crc32::new)
+    .map(Crc32::new)
     .ok_or(GetOrCreateError::BadManifest)?;
   if file_crc32 != last_result_crc32 {
     Err(GetOrCreateError::ManifestOutdated)?;
@@ -126,10 +128,13 @@ pub fn update(
   rom: &path::Path,
   patch: &path::Path,
   hack: hack::RomHack,
-  file_digest: crc::Crc32,
-  patch_digest: crc::Crc32,
-  patched_digest: crc::Crc32,
+  file_digest: Crc32,
+  patch_digest: Crc32,
+  patched_digest: Crc32,
 ) {
+  let file_digest = Crc32Wrapper(file_digest);
+  let patch_digest = Crc32Wrapper(patch_digest);
+  let patched_digest = Crc32Wrapper(patched_digest);
   let file_nodes = doc.nodes_mut();
   kdl::NodeId::new(
     FILE,

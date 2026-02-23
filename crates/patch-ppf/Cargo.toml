@@ -1,0 +1,14 @@
+[package]
+name = "patch-ppf"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+byteorder = "1.4.3"
+crc32fast = "1.3.2"
+log = "0.4.20"
+checked-range = { path = "../checked-range" }
+read-write-utils = { path = "../read-write-utils" }
+read-write-hashers = { path = "../read-write-hashers" }
+result-result-try = { path = "../result-result-try" }
+rompatcher-err = { path = "../rompatcher-err" }

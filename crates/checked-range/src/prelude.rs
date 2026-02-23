@@ -3,7 +3,6 @@ use std::cmp::Ordering;
 use std::ops::{
   Bound, Deref, DerefMut, Range, RangeBounds, RangeFrom, RangeFull, RangeInclusive, RangeTo,
 };
-use thiserror::Error;
 use Bound::*;
 use Ordering::*;
 
@@ -243,8 +242,7 @@ impl<I: Ord> PartialOrd<LowerBound<I>> for UpperBound<I> {
   }
 }
 
-#[derive(Debug, Error)]
-#[error("Invalid range.")]
+#[derive(Debug)]
 pub struct RangeError(());
 
 impl RangeError {

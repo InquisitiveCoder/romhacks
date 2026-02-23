@@ -1,0 +1,17 @@
+[package]
+name = "patch-ups"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+aligned-vec = "0.6.4"
+byteorder = "1.4.3"
+memchr = "2.7.4"
+rayon = "1.10.0"
+read-write-hashers = { path = "../read-write-hashers" }
+read-write-utils = { path = "../read-write-utils" }
+result-result-try = { path = "../result-result-try" }
+rompatcher-crc32-utils = { path = "../rompatcher-crc32-utils" }
+rompatcher-err = { path = "../rompatcher-err" }
+rompatcher-near-utils = { path = "../rompatcher-near-utils" }
+wide = "0.7.32"

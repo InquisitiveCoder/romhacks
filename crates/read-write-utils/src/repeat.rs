@@ -7,15 +7,15 @@ use std::io::prelude::*;
 ///  # Examples
 /// ```
 /// use std::io::prelude::*;
-/// use read_write_utils::RepeatSlice;
+/// use read_write_utils::repeat::RepeatSlice;
 ///
 /// let mut repeat = RepeatSlice::new(&[1, 2, 3]);
 /// let buf = &mut [0u8; 2][..];
-/// let _ = repeat.read(buf);
+/// let _ = repeat.read_exact(buf);
 /// assert_eq!(buf, &[1, 2]);
-/// let _ = repeat.read(buf);
+/// let _ = repeat.read_exact(buf);
 /// assert_eq!(buf, &[3, 1]);
-/// let _ = repeat.read(buf);
+/// let _ = repeat.read_exact(buf);
 /// assert_eq!(buf, &[2, 3]);
 /// ```
 ///
@@ -74,11 +74,11 @@ mod test {
   pub fn test_repeat_slice() -> io::Result<()> {
     let mut repeat = RepeatSlice::new(&[1, 2, 3]);
     let buf = &mut [0u8; 2][..];
-    repeat.read(buf)?;
+    repeat.read_exact(buf)?;
     assert_eq!(buf, &[1, 2]);
-    repeat.read(buf)?;
+    repeat.read_exact(buf)?;
     assert_eq!(buf, &[3, 1]);
-    repeat.read(buf)?;
+    repeat.read_exact(buf)?;
     assert_eq!(buf, &[2, 3]);
     Ok(())
   }

@@ -1,13 +1,12 @@
-use crate::crc::{CRC32Hasher, Crc32};
-use crate::patch;
-use crate::patch::byuu::varint::{DecodingError, ReadNumber};
-use crate::patch::byuu::PatchReport;
 use byteorder::{ReadBytesExt, LE};
 use read_write_hashers::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
 use read_write_utils::repeat::RepeatSlice;
 use result_result_try::try2;
+use rompatcher_crc32_utils::{CRC32Hasher, Crc32};
 use rompatcher_err::prelude::*;
+use rompatcher_near_utils::varint::{DecodingError, ReadNumber};
+use rompatcher_near_utils::{PatchReport, FOOTER_LEN};
 use std::cmp::Ordering;
 use std::io;
 use std::io::prelude::*;
@@ -30,7 +29,7 @@ where
 {
   let start_of_footer: u64 = try2!(
     patch
-      .seek(SeekFrom::End(-(patch::byuu::FOOTER_LEN as i64)))
+      .seek(SeekFrom::End(-(FOOTER_LEN as i64)))
       .map_patch_err::<PatchingError>()?
   );
   patch.seek(SeekFrom::Start(0))?;
@@ -257,17 +256,10 @@ enum Command {
   TargetCopy { length: NonZeroU64, offset: i64 },
 }
 
-#[derive(Debug, thiserror::Error)]
 pub enum PatchingError {
-  #[error("The patch file is corrupt.")]
   BadPatch,
-  #[error("The patch is not meant for this file.")]
   WrongInputFile,
-  #[error(
-    "The patch is not meant for this file, and can't be applied due to the file being too small."
-  )]
   InputFileTooSmall,
-  #[error("This patch has already been applied to the input file.")]
   AlreadyPatched,
 }
 

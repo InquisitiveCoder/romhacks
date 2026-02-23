@@ -1,7 +1,5 @@
-use crate::convert::prelude::*;
-use crate::patch;
 use byteorder::{ReadBytesExt, LE};
-use range_utils::prelude::CheckedRange;
+use checked_range::prelude::CheckedRange;
 use read_write_hashers::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
 use result_result_try::try2;
@@ -264,8 +262,8 @@ impl Format {
   fn find_end_of_patch<R: Read + Seek>(
     patch: &mut io::BufReader<R>,
     body_len_type: FooterBodyLengthType,
-    range: std::ops::Range<u64>,
-  ) -> Result<u64, patch::Error> {
+    range: Range<u64>,
+  ) -> io::Result<Result<u64, PatchingError>> {
     const MAX_BODY_LENGTH: u32 = 3072;
 
     let remaining: u64 = range.end - range.start;
@@ -279,7 +277,7 @@ impl Format {
     // string doesn't fit. If the file ends with the footer end string but we
     // can't find the start string, that should be an error.
     if remaining < footer_end_len {
-      return Ok(range.end);
+      return Ok(Ok(range.end));
     }
 
     // We need to check the footer body length stored at the end of the PPF,
@@ -330,7 +328,7 @@ impl Format {
     // EOF. This is the most common case.
     if buf != END_MAGIC {
       seek_to_start(patch, end_magic_pos)?;
-      return Ok(range.end);
+      return Ok(Ok(range.end));
     }
 
     let body_len: u32 = {
@@ -346,7 +344,7 @@ impl Format {
       // If the body length stored in the file is larger than the max defined
       // in the PPF specs, or it's larger than the non-header region of the
       // file, the file is probably corrupt.
-      return Err(patch::Error::BadPatch);
+      return Ok(Err(BadPatch));
     }
 
     patch.seek_relative(-(footer_len as i64))?;
@@ -357,14 +355,14 @@ impl Format {
     if buf != BEGIN_MAGIC {
       // If the file contains an end-of-footer string without a matching
       // start-of-footer string, the file is probably corrupt.
-      return Err(patch::Error::BadPatch);
+      return Ok(Err(BadPatch));
     }
 
     // Found the footer. Seek back to the start of the patch.
     let footer_pos = range.end - footer_len;
     let current_pos = footer_pos + BEGIN_MAGIC.len() as u64;
     seek_to_start(patch, current_pos)?;
-    Ok(footer_pos)
+    Ok(Ok(footer_pos))
   }
 }
 
@@ -380,14 +378,15 @@ impl BlockCheck {
     &self,
     patch: &mut impl Read,
     file: &mut (impl Read + Seek),
-  ) -> Result<(), patch::Error> {
+  ) -> io::Result<Result<(), PatchingError>> {
     file.seek(io::SeekFrom::Start(self.region.start.into()))?;
-    let file_block: [u8; BLOCK_CHECK_LENGTH as usize] = file.read_array()?;
-    let validation_block: [u8; BLOCK_CHECK_LENGTH as usize] = patch.read_array()?;
+    let file_block: [u8; BLOCK_CHECK_LENGTH as usize] = try2!(file.read_array().map_rom_err()?);
+    let validation_block: [u8; BLOCK_CHECK_LENGTH as usize] =
+      try2!(patch.read_array().map_patch_err()?);
     if file_block != validation_block {
-      Err(patch::Error::BadPatch)?;
+      return Ok(Err(BadPatch));
     }
-    Ok(())
+    Ok(Ok(()))
   }
 }
 
@@ -497,15 +496,10 @@ impl RomOffsetType {
   }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum PatchingError {
-  #[error("The patch file is corrupt.")]
   BadPatch,
-  #[error("The patch is not meant for this file.")]
   WrongInputFile,
-  #[error(
-    "The patch is not meant for this file, and can't be applied due to the file being too small."
-  )]
   InputFileTooSmall,
 }
 
@@ -518,3 +512,20 @@ impl PatchingIOErrors for PatchingError {
     InputFileTooSmall
   }
 }
+
+pub trait TryIntoBool {
+  fn try_into_bool(self) -> Result<bool, TryIntoBoolError>;
+}
+
+impl TryIntoBool for u8 {
+  fn try_into_bool(self) -> Result<bool, TryIntoBoolError> {
+    match self {
+      0 => Ok(false),
+      1 => Ok(true),
+      _ => Err(TryIntoBoolError(())),
+    }
+  }
+}
+
+#[derive(Clone, Debug)]
+pub struct TryIntoBoolError(pub(crate) ());

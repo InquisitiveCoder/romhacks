@@ -1,20 +1,18 @@
-use crate::crc::CRC32Hasher;
 use crate::error;
 use crate::error::prelude::*;
+use patch_bps as bps;
+use patch_ips as ips;
+use patch_ppf as ppf;
+use patch_ups as ups;
+use patch_vcd as vcd;
 use read_write_hashers::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
+use rompatcher_crc32_utils::CRC32Hasher;
 use std::fmt;
 use std::io;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::ops::Deref;
-
-pub mod bps;
-mod byuu;
-pub mod ips;
-pub mod ppf;
-pub mod ups;
-pub mod vcd;
 
 pub use self::err::*;
 

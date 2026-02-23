@@ -1,0 +1,11 @@
+[package]
+name = "patch-vcd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+byteorder = "1.4.3"
+num-traits = "0.2.19"
+read-write-utils = { path = "../read-write-utils" }
+result-result-try = { path = "../result-result-try" }
+rompatcher-err = { path = "../rompatcher-err" }

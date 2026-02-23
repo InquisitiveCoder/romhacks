@@ -1,0 +1,13 @@
+[package]
+name = "patch-bps"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+byteorder = "1.4.3"
+read-write-hashers = { path = "../read-write-hashers" }
+read-write-utils = { path = "../read-write-utils" }
+result-result-try = { path = "../result-result-try" }
+rompatcher-crc32-utils = { path = "../rompatcher-crc32-utils" }
+rompatcher-err = { path = "../rompatcher-err" }
+rompatcher-near-utils = { path = "../rompatcher-near-utils" }

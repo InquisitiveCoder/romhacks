@@ -1,15 +1,15 @@
 //! Format documentation: https://www.romhacking.net/documents/392/
 
-use crate::crc::{CRC32Hasher, Crc32};
-use crate::patch::byuu::varint::{DecodingError, ReadNumber};
-use crate::patch::byuu::*;
 use aligned_vec::{avec, AVec, CACHELINE_ALIGN};
 use byteorder::{ReadBytesExt, LE};
-use ::rayon::prelude::*;
+use rayon::prelude::*;
 use read_write_hashers::{HashingReader, HashingWriter};
 use read_write_utils::prelude::*;
 use result_result_try::try2;
+use rompatcher_crc32_utils::{CRC32Hasher, Crc32};
 use rompatcher_err::prelude::*;
+use rompatcher_near_utils::varint::{DecodingError, ReadNumber};
+use rompatcher_near_utils::{PatchReport, FOOTER_LEN};
 use std::cmp::Ordering;
 use std::io::prelude::*;
 use std::io::ErrorKind::Interrupted;
@@ -236,17 +236,10 @@ fn xor_simd((patch_chunk, output_chunk): (&[u8], &mut [u8])) {
   output_chunk.copy_from_slice(result);
 }
 
-#[derive(Debug, thiserror::Error)]
 pub enum PatchingError {
-  #[error("The patch file is corrupt.")]
   BadPatch,
-  #[error("The patch is not meant for this file.")]
   WrongInputFile,
-  #[error(
-    "The patch is not meant for this file, and can't be applied due to the file being too small."
-  )]
   InputFileTooSmall,
-  #[error("This patch has already been applied to the input file.")]
   AlreadyPatched,
 }
 

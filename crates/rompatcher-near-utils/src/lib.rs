@@ -1,6 +1,6 @@
-//! Code shared by Byuu's (a.k.a. Near) two patch formats, UPS and BPS.
+//! Code shared by Near's (a.k.a. Byuu) two patch formats, UPS and BPS.
 
-use crate::crc::Crc32;
+use rompatcher_crc32_utils::Crc32;
 
 pub mod varint;
 

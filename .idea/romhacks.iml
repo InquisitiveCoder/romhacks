@@ -3,17 +3,24 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/crates/checked-signed-diff/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/crates/range-utils/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/read-write-utils/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher-err/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/result-result-try/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/checked-range/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/patch-ips/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/patch-ppf/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/patch-vcd/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/read-write-hashers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/patch-bps/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/patch-ups/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher-crc32-utils/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/rompatcher-near-utils/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/checked-signed-diff/target" />
-      <excludeFolder url="file://$MODULE_DIR$/crates/range-utils/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/read-write-utils/target" />
       <excludeFolder url="file://$MODULE_DIR$/crates/rompatcher/target" />
+      <excludeFolder url="file://$MODULE_DIR$/crates/checked-range/target" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
