@@ -5,13 +5,9 @@ use std::process;
 
 mod apply;
 mod cli;
-mod convert;
-mod crc;
 mod error;
 mod filename;
-mod fs;
 mod hack;
-mod io_utils;
 mod kdl;
 mod log;
 mod manifest;

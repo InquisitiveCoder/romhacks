@@ -5,7 +5,10 @@ use std::collections::VecDeque;
 use std::io;
 use std::io::prelude::*;
 use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
-use std::io::{copy, BufWriter, Cursor, Empty, Error, Sink, StderrLock, StdoutLock, Take};
+use std::io::{
+  copy, BufReader, BufWriter, Cursor, Empty, Error, Sink, StderrLock, StdoutLock, Take,
+};
+use std::ops::DerefMut;
 
 pub trait ReadExt: Read {
   fn copy_to(&mut self, writer: &mut impl Write) -> io::Result<u64> {
@@ -301,110 +304,98 @@ impl Resize for fs::File {
 ///
 /// This trait indicates that a writer is suitable for small and repeated
 /// writes, as explained in the documentation for [`BufWriter`].
-pub trait BufWrite: Write {
-  /// The type of the underlying writer, if any. May be `Self` for writers that
-  /// don't perform I/O, such as [`Cursor`] or [`Sink`].
-  type Inner: Write + ?Sized;
+pub trait BufWrite: Write {}
 
-  /// Returns a reference to the underlying writer.
-  fn inner(&self) -> &Self::Inner;
-
+/// [`BufWrite`] implementations that support reading from their underlying
+/// stream.
+pub trait AsRead: BufWrite {
   /// Returns a mutable reference to the underlying writer.
   ///
   /// This method is intended for cases where the inner writer has capabilities
   /// that `self` doesn't (e.g. [`Read`].) Writing directly to the inner writer
   /// without calling [`flush`][1] is likely to result in the data being
   /// written in an unintended order.
-  fn inner_mut(&mut self) -> &mut Self::Inner;
+  fn as_read(&mut self) -> io::Result<&mut dyn Read>;
 }
 
-macro_rules! trivial_buf_write {
-  ($type_name:ty) => {
-    type Inner = $type_name;
+impl BufWrite for &mut [u8] {}
 
-    fn inner(&self) -> &Self::Inner {
-      self
-    }
-
-    fn inner_mut(&mut self) -> &mut Self::Inner {
-      self
-    }
-  };
-}
-
-impl BufWrite for &mut [u8] {
-  trivial_buf_write! { Self }
-}
-
-impl BufWrite for Cursor<&mut [u8]> {
-  trivial_buf_write! { Self }
-}
-impl BufWrite for Empty {
-  trivial_buf_write! { Self }
-}
-impl BufWrite for Sink {
-  trivial_buf_write! { Self }
-}
-impl<'a> BufWrite for StderrLock<'a> {
-  trivial_buf_write! { Self }
-}
-
-impl<'a> BufWrite for StdoutLock<'a> {
-  trivial_buf_write! { Self }
-}
-
-impl BufWrite for Cursor<&mut Vec<u8>> {
-  trivial_buf_write! { Self}
-}
-
-impl BufWrite for Cursor<Box<[u8]>> {
-  trivial_buf_write! { Self }
-}
-
-impl BufWrite for Cursor<Vec<u8>> {
-  trivial_buf_write! { Self }
-}
-
-impl BufWrite for VecDeque<u8> {
-  trivial_buf_write! { Self}
-}
-
-impl BufWrite for Vec<u8> {
-  trivial_buf_write! { Self }
-}
-
-impl<W: Write> BufWrite for BufWriter<W> {
-  /// The underlying writer. May be `Self` if the implementing type is an
-  /// in-memory buffer, such as [`Cursor<Vec<u8>>`].
-  type Inner = W;
-
-  /// See [`BufWriter::get_ref`].
-  fn inner(&self) -> &Self::Inner {
-    BufWriter::get_ref(self)
-  }
-
-  /// See [`BufWriter::get_mut`].
-  fn inner_mut(&mut self) -> &mut Self::Inner {
-    BufWriter::get_mut(self)
+impl BufWrite for Cursor<&mut [u8]> {}
+impl AsRead for Cursor<&mut [u8]> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self)
   }
 }
 
-impl<const N: usize> BufWrite for Cursor<[u8; N]> {
-  trivial_buf_write! { Self }
-}
+impl BufWrite for Empty {}
+impl BufWrite for Sink {}
+impl<'a> BufWrite for StderrLock<'a> {}
+impl<'a> BufWrite for StdoutLock<'a> {}
 
-impl<W: BufWrite> BufWrite for Box<W> {
-  trivial_buf_write! { Self }
-}
-
-impl<W: BufWrite> BufWrite for &mut W {
-  type Inner = W::Inner;
-
-  fn inner(&self) -> &Self::Inner {
-    <W as BufWrite>::inner(self)
+impl BufWrite for Cursor<&mut Vec<u8>> {}
+impl AsRead for Cursor<&mut Vec<u8>> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self)
   }
+}
 
-  fn inner_mut(&mut self) -> &mut Self::Inner {
-    <W as BufWrite>::inner_mut(self)
+impl BufWrite for Cursor<Box<[u8]>> {}
+impl AsRead for Cursor<Box<[u8]>> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self)
+  }
+}
+
+impl BufWrite for Cursor<Vec<u8>> {}
+impl AsRead for Cursor<Vec<u8>> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self)
+  }
+}
+
+impl BufWrite for VecDeque<u8> {}
+impl AsRead for VecDeque<u8> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self)
+  }
+}
+
+impl BufWrite for Vec<u8> {}
+
+impl<W: Write> BufWrite for BufWriter<W> {}
+
+impl<I: Read + Write> AsRead for BufWriter<I> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self.get_mut())
+  }
+}
+
+impl<const N: usize> BufWrite for Cursor<[u8; N]> {}
+impl<const N: usize> AsRead for Cursor<[u8; N]> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    Ok(self)
+  }
+}
+
+impl<W: BufWrite> BufWrite for Box<W> {}
+impl<W: AsRead> AsRead for Box<W> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    self.as_mut().as_read()
+  }
+}
+
+impl<W: BufWrite> BufWrite for &mut W {}
+impl<W: AsRead> AsRead for &mut W {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.flush()?;
+    <W as AsRead>::as_read(self)
   }
 }

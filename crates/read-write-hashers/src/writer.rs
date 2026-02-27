@@ -81,15 +81,11 @@ where
   }
 }
 
-impl<W: BufWrite, H: Hasher> BufWrite for HashingWriter<W, H> {
-  type Inner = W::Inner;
+impl<W: BufWrite, H: Hasher> BufWrite for HashingWriter<W, H> {}
 
-  fn inner(&self) -> &Self::Inner {
-    self.inner().inner()
-  }
-
-  fn inner_mut(&mut self) -> &mut Self::Inner {
-    self.inner_mut().inner_mut()
+impl<I: AsRead, H: Hasher> AsRead for HashingWriter<I, H> {
+  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+    self.inner.as_read()
   }
 }
 

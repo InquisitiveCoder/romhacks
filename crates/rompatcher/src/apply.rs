@@ -1,5 +1,4 @@
 use crate::error::prelude::*;
-use crate::fs::HasPath;
 use crate::patch::find_patch_kind;
 use crate::{filename, hack, manifest, patch};
 use fs_err as fs;
@@ -51,7 +50,8 @@ impl Args {
       }
     };
 
-    let game_name: ffi::OsString = ffi::OsString::from(filename::infer_game_name(&rom.path()));
+    let game_name: ffi::OsString =
+      ffi::OsString::from(filename::infer_game_name(&rom.get_ref().path()));
     let manifest_path: ffi::OsString = {
       let mut buf = ffi::OsString::from(&game_name);
       buf.push(" (patched).romhacks.kdl");
@@ -59,7 +59,7 @@ impl Args {
     };
     let mut doc = manifest::get_or_create(
       &manifest_path,
-      &rom.path(),
+      &rom.get_ref().path(),
       Crc32::new(checksums.source_crc32),
       Crc32::new(checksums.patch_crc32),
     )?;
@@ -69,7 +69,7 @@ impl Args {
     let patched_file_name: ffi::OsString = {
       let mut buf = ffi::OsString::from(&game_name);
       buf.push(" (patched)");
-      if let Some(ext) = rom.path().extension() {
+      if let Some(ext) = rom.get_ref().path().extension() {
         buf.push(".");
         buf.push(ext);
       }

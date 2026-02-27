@@ -1,8 +1,9 @@
-use crate::prelude::{BufWrite, TakeExt};
+use crate::prelude::{AsRead, BufWrite, TakeExt};
+use crate::repeat::RepeatSlice;
 use checked_signed_diff::prelude::*;
 use std::io::ErrorKind::*;
 use std::io::*;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 const ERR_MSG: &'static str = "PositionTracker position overflowed.";
 
@@ -78,7 +79,7 @@ impl<T> PositionTracker<T> {
   /// stream _must_ be at position 0 when the tracker is created.
   ///
   /// Performing I/O operations directly on the inner stream (e.g. via
-  /// [`BufWrite::inner_mut`]) will also desynchronize the calculated position.
+  /// [`BorrowInner::inner_mut`]) will also desynchronize the calculated position.
   ///
   /// Finally, be aware that many [`Seek`] implementations allow seeking past
   /// EOF and return such positions from [`Seek::stream_position()`]. It's
@@ -337,7 +338,7 @@ impl<W: Write> PositionTracker<W> {
   }
 }
 
-impl<W: BufWrite> PositionTracker<W> {
+impl<I: AsRead> PositionTracker<I> {
   /// Performs tracked I/O operations on the inner stream of this [`BufWrite`].
   ///
   /// The writer will be [flushed](Write::flush) prior to calling `f`.
@@ -346,13 +347,12 @@ impl<W: BufWrite> PositionTracker<W> {
   ///
   /// A noteworthy use case this function facilitates is reading from a file
   /// wrapped by a [`BufWriter`].
-  pub fn with_bufwriter_inner<F, R>(&mut self, f: F) -> Result<R>
+  pub fn read_from_inner<F, R>(&mut self, f: F) -> Result<R>
   where
-    F: FnOnce(&mut PositionTracker<&mut W::Inner>) -> Result<R>,
+    F: FnOnce(&mut PositionTracker<&mut dyn Read>) -> Result<R>,
   {
-    self.flush()?;
     let mut inner_tracker =
-      PositionTracker::with_known_position(self.position, self.inner.inner_mut());
+      PositionTracker::with_known_position(self.position, self.inner.as_read()?);
     let result = f(&mut inner_tracker)?;
     self.position = inner_tracker.position();
     Ok(result)
@@ -396,25 +396,7 @@ impl<W: Write> Write for PositionTracker<W> {
   }
 }
 
-impl<W: BufWrite> BufWrite for PositionTracker<W> {
-  type Inner = W::Inner;
-
-  fn inner(&self) -> &Self::Inner {
-    self.inner.inner()
-  }
-
-  /// Returns a mutable reference to [`self.inner()`][1].
-  ///
-  /// **Warning:** Performing I/O operations on the inner stream will cause its
-  /// position to differ from the value calculated by this [`PositionTracker`].
-  /// See [`PositionTracker::with_inner`] for a safer alternative.
-  ///
-  /// [1]: PositionTracker::inner
-  /// [2]: PositionTracker::position
-  fn inner_mut(&mut self) -> &mut Self::Inner {
-    self.inner.inner_mut()
-  }
-}
+impl<W: BufWrite> BufWrite for PositionTracker<W> {}
 
 impl<T> Deref for PositionTracker<T> {
   type Target = T;
@@ -435,3 +417,47 @@ pub trait PositionTrackerReadExt: Read {
 }
 
 impl<R: Read> PositionTrackerReadExt for R {}
+
+#[derive(Debug)]
+pub struct WithSeek<T>(pub T);
+
+impl<T> Deref for WithSeek<T> {
+  type Target = T;
+
+  fn deref(&self) -> &Self::Target {
+    &self.0
+  }
+}
+
+impl<T> DerefMut for WithSeek<T> {
+  fn deref_mut(&mut self) -> &mut Self::Target {
+    &mut self.0
+  }
+}
+
+impl<R: Read> Read for WithSeek<R> {
+  fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+    self.0.read(buf)
+  }
+}
+
+impl<B: BufRead> BufRead for WithSeek<B> {
+  fn fill_buf(&mut self) -> Result<&[u8]> {
+    self.0.fill_buf()
+  }
+
+  fn consume(&mut self, amt: usize) {
+    self.0.consume(amt)
+  }
+}
+
+impl Seek for PositionTracker<RepeatSlice<'_>> {
+  fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+    match pos {
+      SeekFrom::Start(pos) => self.position = pos,
+      SeekFrom::Current(offset) => self.increment_position(offset),
+      SeekFrom::End(_) => self.position = u64::MAX,
+    }
+    Ok(self.position)
+  }
+}

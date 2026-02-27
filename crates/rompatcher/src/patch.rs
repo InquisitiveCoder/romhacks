@@ -12,31 +12,8 @@ use std::fmt;
 use std::io;
 use std::io::prelude::*;
 use std::io::SeekFrom;
-use std::ops::Deref;
 
 pub use self::err::*;
-
-#[derive(Clone, Debug)]
-pub struct Patch<F> {
-  file: F,
-  kind: Kind,
-}
-
-impl<F: Read + Seek> Patch<F> {
-  pub fn new(mut file: F) -> io::Result<Self> {
-    let magic = file.read_array::<3>()?;
-    file.seek(SeekFrom::Start(0))?;
-    let kind = match &magic[..] {
-      ips::MAGIC => Kind::IPS,
-      ups::MAGIC => Kind::UPS,
-      bps::MAGIC => Kind::BPS,
-      ppf::MAGIC => Kind::PPF,
-      vcd::MAGIC => Kind::VCD,
-      _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
-    };
-    Ok(Self { file, kind })
-  }
-}
 
 pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
   let magic = file.read_array::<3>()?;
@@ -50,56 +27,6 @@ pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
     _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
   };
   Ok(kind)
-}
-
-impl<P> Patch<P> {
-  pub fn kind(&self) -> Kind {
-    self.kind
-  }
-
-  pub fn file(&self) -> &P {
-    &self.file
-  }
-}
-
-impl<P> Deref for Patch<P> {
-  type Target = P;
-
-  fn deref(&self) -> &Self::Target {
-    &self.file
-  }
-}
-
-impl<R: Read> Read for Patch<R> {
-  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-    self.file.read(buf)
-  }
-}
-
-impl<R: BufRead> BufRead for Patch<R> {
-  fn fill_buf(&mut self) -> io::Result<&[u8]> {
-    self.file.fill_buf()
-  }
-
-  fn consume(&mut self, amt: usize) {
-    self.file.consume(amt)
-  }
-}
-
-impl<W: Write> Write for Patch<W> {
-  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    self.file.write(buf)
-  }
-
-  fn flush(&mut self) -> io::Result<()> {
-    self.file.flush()
-  }
-}
-
-impl<S: Seek> Seek for Patch<S> {
-  fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-    self.file.seek(pos)
-  }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -152,8 +79,7 @@ impl Patcher {
   where
     R: BufRead + Seek,
     P: BufRead + Seek,
-    O: BufWrite + Seek,
-    for<'a> &'a mut O::Inner: Read + Write + Seek,
+    O: BufWrite + AsRead + Seek,
   {
     match self.0 {
       Kind::IPS => Patcher::ips(rom, patch, output),
@@ -191,8 +117,7 @@ impl Patcher {
   where
     R: BufRead,
     P: BufRead + Seek,
-    O: BufWrite,
-    for<'a> &'a mut O::Inner: Read + Write + Seek,
+    O: BufWrite + AsRead,
   {
     let report = ups::patch(rom, patch, output, strict)??;
     Ok(Checksums {
@@ -211,8 +136,7 @@ impl Patcher {
   where
     R: BufRead + Seek,
     P: BufRead + Seek,
-    O: BufWrite + Seek,
-    for<'a> &'a mut O::Inner: Read + Write + Seek,
+    O: BufWrite + AsRead + Seek,
   {
     let report = bps::patch(rom, patch, output, strict)??;
     Ok(Checksums {
@@ -231,8 +155,7 @@ impl Patcher {
   where
     R: BufRead + Seek,
     P: BufRead + Seek,
-    O: BufWrite,
-    for<'a> &'a mut O::Inner: Read + Write + Seek,
+    O: BufWrite + AsRead,
   {
     let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());
@@ -250,8 +173,7 @@ impl Patcher {
   where
     R: BufRead + Seek,
     P: BufRead + Seek,
-    O: BufWrite + Seek,
-    for<'a> &'a mut O::Inner: Read + Write + Seek,
+    O: BufWrite + AsRead + Seek,
   {
     let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());

@@ -133,28 +133,6 @@ impl<R: BufRead + Seek, H: Hasher> Seek for MonotonicHashingReader<R, H> {
   }
 }
 
-impl<W: Write, H> Write for MonotonicHashingReader<W, H> {
-  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-    self.inner.write(buf)
-  }
-
-  fn flush(&mut self) -> io::Result<()> {
-    self.inner.flush()
-  }
-}
-
-impl<W: BufWrite, H> BufWrite for MonotonicHashingReader<W, H> {
-  type Inner = PositionTracker<W>;
-
-  fn inner(&self) -> &Self::Inner {
-    &self.inner
-  }
-
-  fn inner_mut(&mut self) -> &mut Self::Inner {
-    &mut self.inner
-  }
-}
-
 impl<R, H> MonotonicHashingReader<R, H>
 where
   R: BufRead + Seek,

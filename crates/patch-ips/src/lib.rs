@@ -2,6 +2,7 @@
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, BE};
 use read_write_utils::prelude::*;
+use read_write_utils::repeat::RepeatSlice;
 use result_result_try::try2;
 use rompatcher_err::prelude::*;
 use std::io;
@@ -12,6 +13,9 @@ use PatchingError::*;
 pub const MAGIC: &[u8] = b"PAT";
 
 const EOF_OFFSET: u32 = u32::from_be_bytes([0, b'E', b'O', b'F']);
+
+trait BufReadSeek: BufRead + Seek {}
+impl<T: BufRead + Seek> BufReadSeek for T {}
 
 /// Applies an IPS patch to a ROM. Returns the size of the patched file.
 ///
@@ -25,14 +29,17 @@ pub fn patch(
   patch: &mut impl BufRead,
   output: &mut impl BufWrite,
 ) -> io::Result<Result<u64, PatchingError>> {
-  let mut rom = PositionTracker::from_start(rom);
+  let mut rom = PositionTracker::<&mut dyn BufReadSeek>::from_start(rom);
   let mut patch = PositionTracker::from_start(patch);
-  let mut output = PositionTracker::from_start(output);
+  let mut output = PositionTracker::<&mut dyn BufWrite>::from_start(output);
+  let mut repeat = PositionTracker::from_start(RepeatSlice::new(&[0]));
+  let mut sink = PositionTracker::from_start(io::sink());
 
   if &(try2!(patch.read_array::<5>().map_patch_err()?)) != b"PATCH" {
     return Ok(Err(BadPatch));
   }
 
+  let mut input_file_too_small = false;
   loop {
     let offset: u32 = try2!(patch.read_u24::<BE>().map_patch_err()?);
     if offset == EOF_OFFSET {
@@ -40,11 +47,35 @@ pub fn patch(
     }
 
     // Copy the input file as is until the next patch hunk.
-    try2!(
-      rom
-        .copy_to_other_until(offset.into(), &mut output)
-        .map_rom_err()?
-    );
+    // If patching is unable to continue because the ROM is too small, replace
+    // the input and output with RepeatSlice and Sink and continue. Only return
+    // InputFileTooSmall if the patch appears to be valid.
+    let rom_copy_result = rom
+      .copy_to_other_until(offset.into(), &mut output)
+      .map_rom_err()?;
+    if let Err(InputFileTooSmall) = rom_copy_result {
+      input_file_too_small = true;
+      rom = {
+        let pos = rom.position();
+        let inner = repeat.into_inner();
+        repeat = PositionTracker::with_known_position(pos, inner);
+        PositionTracker::with_known_position(pos, &mut repeat)
+      };
+      output = {
+        let pos = output.position();
+        let inner = sink.into_inner();
+        sink = PositionTracker::with_known_position(pos, inner);
+        PositionTracker::from_start(&mut sink)
+      };
+      // Finish the copy so that rom and output reach the same position as if
+      // the initial copy had succeeded.
+      if let Err(_) = rom.copy_to_other_until(offset.into(), &mut output) {
+        unreachable!("A copy from RepeatSlice to Sink should never fail.");
+      }
+    } else {
+      // Propagate other PatchErrors immediately.
+      try2!(rom_copy_result);
+    }
 
     let encoded_hunk_size = try2!(patch.read_u16::<BE>().map_patch_err()?);
     let hunk_size: num::NonZeroU16 = match num::NonZeroU16::new(encoded_hunk_size) {
@@ -109,6 +140,10 @@ pub fn patch(
       );
     }
   };
+
+  if input_file_too_small {
+    return Ok(Err(InputFileTooSmall));
+  }
 
   Ok(Ok(output.position()))
 }

@@ -24,8 +24,7 @@ pub fn patch<O>(
   strict: bool,
 ) -> io::Result<Result<PatchReport, PatchingError>>
 where
-  O: BufWrite + Seek,
-  for<'a> &'a mut O::Inner: Read + Write + Seek,
+  O: BufWrite + AsRead + Seek,
 {
   let start_of_footer: u64 = try2!(
     patch
@@ -126,8 +125,7 @@ fn apply_patch<O>(
   expected_source_size: u64,
 ) -> io::Result<Result<(), PatchingError>>
 where
-  O: BufWrite + Seek + ?Sized,
-  for<'a> &'a mut O::Inner: Read + Write + Seek,
+  O: BufWrite + AsRead + Seek + ?Sized,
   O: Sized,
 {
   let mut source_relative_offset: u64 = 0;
@@ -193,14 +191,14 @@ where
         // BufWriters don't support reading, so use the inner writer instead.
         try2!(
           output
-            .with_bufwriter_inner(|output: &mut PositionTracker<&mut O::Inner>| {
+            .read_from_inner(|output: &mut PositionTracker<&mut dyn Read>| {
               target_copy_buffer
                 .reserve(usize::try_from(sequence_period_len.get()).unwrap_or(usize::MAX));
-              output.copy_exactly(sequence_period_len.get(), &mut target_copy_buffer)?;
-              output.seek(SeekFrom::Start(output_offset))
+              output.copy_exactly(sequence_period_len.get(), &mut target_copy_buffer)
             })
             .map_patch_err::<E>()?
         );
+        output.seek(SeekFrom::Start(output_offset))?;
 
         RepeatSlice::new(&target_copy_buffer[..])
           .take(length.get())

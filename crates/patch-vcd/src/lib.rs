@@ -25,8 +25,7 @@ pub fn patch<O>(
   output: &mut O,
 ) -> io::Result<Result<(), PatchingError>>
 where
-  O: BufWrite + Seek,
-  for<'a> &'a mut O::Inner: Read + Write + Seek,
+  O: BufWrite + AsRead + Seek,
 {
   let rom = PositionTracker::from_start(rom);
   let mut patch = PositionTracker::from_start(patch);
@@ -75,8 +74,7 @@ impl<R, P, O> Patcher<R, P, O>
 where
   R: BufRead + Seek,
   P: BufRead,
-  O: BufWrite + Seek,
-  for<'a> &'a mut O::Inner: Read + Write + Seek,
+  O: BufWrite + AsRead + Seek,
 {
   pub const VCD_SOURCE: u8 = 0x01;
   pub const VCD_TARGET: u8 = 0x02;
@@ -117,14 +115,14 @@ where
         output.seek(SeekFrom::Start(source_position))?;
         try2!(
           output
-            .with_bufwriter_inner(|output: &mut PositionTracker<&mut O::Inner>| {
+            .read_from_inner(|output: &mut PositionTracker<&mut dyn Read>| {
               output
                 .take(source_len as u64)
-                .exactly(|output| output.copy_to_slice(&mut buffers.superstring))?;
-              output.seek(SeekFrom::End(0))
+                .exactly(|output| output.copy_to_slice(&mut buffers.superstring))
             })
             .map_patch_err()?
         );
+        output.seek(SeekFrom::End(0))?;
 
         source_len
       }

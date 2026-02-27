@@ -46,13 +46,3 @@ impl GameNameMatcher {
     file_stem
   }
 }
-
-pub trait FileName {
-  fn file_name(&self) -> &OsStr;
-}
-
-impl FileName for fs_err::File {
-  fn file_name(&self) -> &OsStr {
-    self.path().file_name().unwrap()
-  }
-}

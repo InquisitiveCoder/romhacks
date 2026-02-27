@@ -6,12 +6,3 @@ where
   f(&mut value);
   value
 }
-
-/// Applies a closure to a value and then returns the result.
-pub fn try_init<T, F, O, E>(mut value: T, f: F) -> Result<T, E>
-where
-  F: FnOnce(&mut T) -> Result<O, E>,
-{
-  f(&mut value)?;
-  Ok(value)
-}

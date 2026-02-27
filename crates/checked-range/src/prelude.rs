@@ -15,7 +15,7 @@ use Ordering::*;
 /// [`Excluded`]. If at least one bound is [`Unbounded`], the range is always
 /// well-formed.
 ///
-/// For example, `0..`, `0..0` and `0..=0` are both well-formed,
+/// For example, `0..`, `0..0` and `0..=0` are all well-formed,
 /// but `1..0` and `1..=0` aren't.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CheckedRange<R, I>(R, std::marker::PhantomData<I>);
