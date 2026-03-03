@@ -29,9 +29,10 @@ impl<'a> RepeatSlice<'a> {
   /// Returns a new reader.
   ///
   /// # Panics
-  /// This function panics if `slice.len() == 0`.
+  /// This function panics if `slice.len() == 0` or
+  /// `u64::try_from(slice.len()).is_err()`
   pub fn new(slice: &'a [u8]) -> Self {
-    assert!(slice.len() > 1);
+    assert!(0 < slice.len() && u64::try_from(slice.len()).is_ok());
     Self { cursor: io::Cursor::new(slice) }
   }
 
@@ -48,6 +49,7 @@ impl Read for RepeatSlice<'_> {
 
     loop {
       let read = self.cursor.read(buf)?;
+      // The u64 cast was checked in RepeatSlice::new.
       if self.cursor.position() == self.slice().len() as u64 {
         self.cursor.set_position(0);
       }

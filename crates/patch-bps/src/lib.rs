@@ -12,7 +12,7 @@ use std::io;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::num::NonZeroU64;
-use PatchingError as E;
+use PatchingError as PErr;
 use PatchingError::*;
 
 pub const MAGIC: &[u8] = b"BPS";
@@ -62,10 +62,10 @@ where
   // Check if the patch is valid before returning any errors from apply_patch.
   // An InputFileTooSmall error is a false positive if the patch is corrupt.
   patch.copy_until(start_of_footer, &mut io::sink())?;
-  let expected_source_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
-  let expected_target_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
+  let expected_source_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<PErr>()?));
+  let expected_target_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<PErr>()?));
   let patch_internal_crc32 = patch.hasher().finish();
-  let expected_patch_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
+  let expected_patch_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<PErr>()?));
   let patch_whole_file_crc32 = patch.hasher().finish();
   if patch_internal_crc32 != expected_patch_crc32 {
     return Ok(Err(BadPatch));
@@ -142,14 +142,14 @@ where
         try2!(
           rom
             .copy_to_other_exactly(length.get(), &mut output)
-            .map_rom_err::<E>()?
+            .map_rom_err::<PErr>()?
         );
       }
       Command::TargetRead { length } => {
         try2!(
           patch
             .copy_to_other_exactly(length.get(), &mut output)
-            .map_patch_err::<E>()?
+            .map_patch_err::<PErr>()?
         );
       }
       Command::SourceCopy { length, offset } => {
@@ -165,7 +165,7 @@ where
         try2!(
           rom
             .copy_to_other_exactly(length.get(), &mut output)
-            .map_rom_err::<E>()?
+            .map_rom_err::<PErr>()?
         );
         source_relative_offset = try2!(
           source_relative_offset
@@ -196,7 +196,7 @@ where
                 .reserve(usize::try_from(sequence_period_len.get()).unwrap_or(usize::MAX));
               output.copy_exactly(sequence_period_len.get(), &mut target_copy_buffer)
             })
-            .map_patch_err::<E>()?
+            .map_patch_err::<PErr>()?
         );
         output.seek(SeekFrom::Start(output_offset))?;
 
@@ -230,18 +230,39 @@ trait ReadBPS: Read + ReadNumber {
     Ok(Ok(match encoded & 3 {
       0 => Command::SourceRead { length },
       1 => Command::TargetRead { length },
-      2 => Command::SourceCopy { length, offset: try2!(self.decode_signed()?) },
-      3 => Command::TargetCopy { length, offset: try2!(self.decode_signed()?) },
+      2 => Command::SourceCopy { length, offset: try2!(self.read_signed()?) },
+      3 => Command::TargetCopy { length, offset: try2!(self.read_signed()?) },
       _ => unreachable!(),
     }))
   }
 
-  fn decode_signed(&mut self) -> io::Result<Result<i64, DecodingError>> {
+  fn read_signed(&mut self) -> io::Result<Result<i64, DecodingError>> {
     let data: u64 = try2!(self.read_number()?);
-    // A 63-bit unsigned value always fits in an i64.
-    Ok(Ok(
-      (if data & 1 == 1 { -1 } else { 1 }) * (data >> 1) as i64,
-    ))
+    Ok(Ok(i64_from_sign_and_magnitude(data)))
+  }
+}
+
+fn i64_from_sign_and_magnitude(x: u64) -> i64 {
+  // A 63-bit unsigned value always fits in an i64.
+  (if x & 1 == 1 { -1 } else { 1 }) * (x >> 1) as i64
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  #[test]
+  fn test_zero() {
+    assert_eq!(0, i64_from_sign_and_magnitude(0))
+  }
+
+  #[test]
+  fn test_max_positive() {
+    assert_eq!(i64::MAX, i64_from_sign_and_magnitude(0xFFFFFFFFFFFFFFFEu64))
+  }
+
+  #[test]
+  fn test_max_negative() {
+    assert_eq!(i64::MIN + 1, i64_from_sign_and_magnitude(u64::MAX))
   }
 }
 

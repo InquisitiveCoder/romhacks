@@ -8,6 +8,7 @@ use std::borrow::Cow;
 use std::fmt::Formatter;
 use std::hash::Hasher;
 use std::io::prelude::*;
+use std::io::SeekFrom;
 use std::num;
 use std::ops::Range;
 use std::{cmp, io};
@@ -29,18 +30,13 @@ pub fn patch(
   let mut patch = PositionTracker::from_start(patch);
   let Format {
     block_check,
-    can_have_footer,
+    footer_body_len_size,
     has_undo_data,
     rom_offset_type,
   } = try2!(Format::parse_and_validate(&mut patch)?);
   let mut rom = PositionTracker::from_start(rom);
 
   let offset_size: usize = rom_offset_type.size();
-  let magic_offset: u64 = {
-    let mut buf = [0u8; 8];
-    (&mut &BEGIN_MAGIC[..offset_size]).read(&mut buf[..])?;
-    u64::from_le_bytes(buf)
-  };
   let mut hasher = crc32fast::Hasher::new();
 
   loop {
@@ -53,10 +49,6 @@ pub fn patch(
           .map_patch_err()?
       ))
     };
-
-    if can_have_footer && offset == magic_offset {
-      break;
-    }
 
     let hunk_length: u8 = try2!(patch.read_u8().map_patch_err()?);
     try2!(num::NonZeroU8::new(hunk_length).ok_or(BadPatch));
@@ -124,8 +116,8 @@ pub fn patch(
       patch.seek_relative(hunk_length.into())?;
     }
 
-    if patch.has_reached_eof()? {
-      break; // EOF
+    if try2!(is_end_of_patch(&mut patch, footer_body_len_size)?) {
+      break;
     }
   }
 
@@ -140,8 +132,8 @@ pub fn patch(
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Format {
   rom_offset_type: RomOffsetType,
+  footer_body_len_size: Option<FooterBodyLengthType>,
   has_undo_data: bool,
-  can_have_footer: bool,
   block_check: Option<BlockCheck>,
 }
 
@@ -180,7 +172,7 @@ impl Format {
 
     Ok(Ok(match version {
       Version::V1 => Format {
-        can_have_footer: false,
+        footer_body_len_size: None,
         rom_offset_type: RomOffsetType::U32,
         has_undo_data: false,
         block_check: None,
@@ -199,7 +191,7 @@ impl Format {
         let block_start = u64::from(ImageType::BIN.block_check_offset());
         let block_end = block_start + u64::from(BLOCK_CHECK_LENGTH);
         Format {
-          can_have_footer: true,
+          footer_body_len_size: Some(FooterBodyLengthType::U32),
           rom_offset_type: RomOffsetType::U32,
           has_undo_data: false,
           block_check: Some(BlockCheck {
@@ -237,7 +229,7 @@ impl Format {
           }
         };
         Format {
-          can_have_footer: true,
+          footer_body_len_size: Some(FooterBodyLengthType::U16),
           rom_offset_type: RomOffsetType::U64,
           has_undo_data,
           block_check,
@@ -245,125 +237,70 @@ impl Format {
       }
     }))
   }
+}
 
-  /// Finds the end of the PPF2 or PPF3 patch data. PPF2 and PPF3 files may
-  /// have an **optional** footer with the following structure:
-  ///
-  /// `"@BEGIN_FILE_ID.DIZ" BODY "@END_FILE_ID.DIZ" BODY_LENGTH`
-  ///
-  /// where BODY_LENGTH cannot exceed 3072. BODY_LENGTH is 4 bytes long in
-  /// PPF2 files and 2 bytes long in PPF3. (It's not clear what purpose the
-  /// final two BODY_LENGTH bytes served in PPF2; the PPF3 docs don't say.)
-  ///
-  /// The PPF3 documentation refers to the BODY as a file_id, FILE_ID.DIZ, or
-  /// FILE_ID.DIZ file. Because of this lack of consistency and the potential
-  /// ambiguity with the term "file_id area", this code uses the terms "footer"
-  /// and "body" instead.
-  fn find_end_of_patch<R: Read + Seek>(
-    patch: &mut io::BufReader<R>,
-    body_len_type: FooterBodyLengthType,
-    range: Range<u64>,
-  ) -> io::Result<Result<u64, PatchingError>> {
-    const MAX_BODY_LENGTH: u32 = 3072;
+/// Parse the end of the PPF2 or PPF3 patch data. PPF2 and PPF3 files may
+/// have an **optional** footer with the following structure:
+///
+/// `"@BEGIN_FILE_ID.DIZ" BODY "@END_FILE_ID.DIZ" BODY_LENGTH`
+///
+/// where BODY_LENGTH cannot exceed 3072. BODY_LENGTH is 4 bytes long in
+/// PPF2 files and 2 bytes long in PPF3. (It's not clear why 4 bytes were
+/// reserved for this purpose when 2 would suffice; the PPF3 docs don't say.)
+///
+/// The PPF3 documentation refers to the BODY as a file_id, FILE_ID.DIZ, or
+/// FILE_ID.DIZ file. Because of this lack of consistency and the potential
+/// ambiguity with the term "file_id area", this code uses the terms "footer"
+/// and "body" instead.
+fn is_end_of_patch(
+  patch: &mut PositionTracker<&mut (impl BufRead + Seek)>,
+  footer_body_len_size: Option<FooterBodyLengthType>,
+) -> io::Result<Result<bool, PatchingError>> {
+  const MAX_BODY_LEN: u64 = 3072;
 
-    let remaining: u64 = range.end - range.start;
-    let body_len_size: usize = body_len_type.size();
-    let footer_end_len: u64 = END_MAGIC.len() as u64 + body_len_size as u64;
-
-    // If the end string doesn't fit, there's obviously no footer. Return EOF.
-    // Note that this behavior differs from the applyppf3 program; it only
-    // checks for the second ".DIZ", which can result in false positives.
-    // Also note that we don't want to return early in the case where the start
-    // string doesn't fit. If the file ends with the footer end string but we
-    // can't find the start string, that should be an error.
-    if remaining < footer_end_len {
-      return Ok(Ok(range.end));
-    }
-
-    // We need to check the footer body length stored at the end of the PPF,
-    // then backtrack to validate the start of the footer.
-    //
-    // If file is larger than the read buffer, the BufReader will need to refill
-    // its buffer at some point. Instead of letting the BufReader refill the
-    // buffer at an arbitrary position close to the end of the file, it's better
-    // to refill it with the last patch.capacity() bytes so that we can backtrack
-    // within the buffer instead of seeking backwards beyond the start of the
-    // buffer and performing an additional read.
-    let end_buf_pos: u64 = if range.end > patch.capacity() as u64 {
-      // The buffer needs to be empty for BufReader::fill_buf to refill it;
-      // BufReader::pos.rs will always discard the buffer.
-      let pos: u64 = patch.seek(io::SeekFrom::End(-(patch.capacity() as i64)))?;
-      patch.fill_buf()?;
-      pos
-    } else {
-      range.start
-    };
-
-    // All of the following relative seeks (except possibly the final pos.rs back
-    // to the start of the patch region) should fall within the buffer.
-
-    // Seek to the end-of-footer magic string.
-    let end_magic_pos: u64 = range.end - footer_end_len;
-    patch.seek_relative((end_magic_pos - end_buf_pos) as i64)?;
-
-    let seek_to_start = |patch: &mut io::BufReader<R>, pos: u64| -> io::Result<()> {
-      if range.start >= end_buf_pos {
-        // The start of the patch area falls within the read buffer.
-        // Perform a relative pos.rs to keep the buffer.
-        patch.seek_relative(range.start as i64 - pos as i64)
-      } else {
-        // The start of the patch area isn't in the buffer, so the buffer will
-        // be discarded regardless of how we pos.rs. An absolute pos.rs is simpler
-        // and avoids overflow issues when calculating this offset.
-        patch.seek(io::SeekFrom::Start(range.start))?;
-        Ok(())
-      }
-    };
-
-    let buf = {
-      let mut buf = [0u8; END_MAGIC.len()];
-      patch.read_exact(&mut buf[..]).map(|_| buf)?
-    };
-    // If there's no footer, pos.rs back to the start of the patch data and return
-    // EOF. This is the most common case.
-    if buf != END_MAGIC {
-      seek_to_start(patch, end_magic_pos)?;
-      return Ok(Ok(range.end));
-    }
-
-    let body_len: u32 = {
-      // Little endian order yields the same numerical value at larger sizes,
-      // so a 4 byte buffer can be used for both a body_len_size of 2 and 4.
-      let mut buf = [0u8; size_of::<u32>()];
-      patch.read_exact(&mut buf[..body_len_size])?;
-      u32::from_le_bytes(buf)
-    };
-    let footer_len: u64 =
-      BEGIN_MAGIC.len() as u64 + body_len as u64 + END_MAGIC.len() as u64 + body_len_size as u64;
-    if body_len > MAX_BODY_LENGTH || footer_len > remaining {
-      // If the body length stored in the file is larger than the max defined
-      // in the PPF specs, or it's larger than the non-header region of the
-      // file, the file is probably corrupt.
-      return Ok(Err(BadPatch));
-    }
-
-    patch.seek_relative(-(footer_len as i64))?;
-    let buf = {
-      let mut buf = [0u8; BEGIN_MAGIC.len()];
-      patch.read_exact(&mut buf[..]).map(|_| buf)?
-    };
-    if buf != BEGIN_MAGIC {
-      // If the file contains an end-of-footer string without a matching
-      // start-of-footer string, the file is probably corrupt.
-      return Ok(Err(BadPatch));
-    }
-
-    // Found the footer. Seek back to the start of the patch.
-    let footer_pos = range.end - footer_len;
-    let current_pos = footer_pos + BEGIN_MAGIC.len() as u64;
-    seek_to_start(patch, current_pos)?;
-    Ok(Ok(footer_pos))
+  if patch.has_reached_eof()? {
+    // No footer.
+    return Ok(Ok(true));
   }
+
+  let body_len_size = match footer_body_len_size.map(FooterBodyLengthType::size) {
+    None => return Ok(Ok(false)), // The patch can't have a footer.
+    Some(footer_body_len_size) => footer_body_len_size,
+  };
+
+  if !patch.next_bytes_eq::<{ BEGIN_MAGIC.len() }>(BEGIN_MAGIC)? {
+    // The patch may have a footer, but it hasn't been reached.
+    return Ok(Ok(false));
+  }
+
+  // The start of the footer was found.
+  // Validate the body length and the magic string terminating the footer.
+  let body_start = patch.position() + BEGIN_MAGIC.len() as u64;
+  let body_end = patch.seek(SeekFrom::End(
+    -(END_MAGIC.len() as i64 + body_len_size as i64),
+  ))?;
+  let body_len = try2!(u64::checked_sub(body_end, body_start).ok_or(BadPatch));
+  if body_len > MAX_BODY_LEN {
+    return Ok(Err(BadPatch));
+  }
+  if &patch.read_array::<{ END_MAGIC.len() }>()?[..] != END_MAGIC {
+    return Ok(Err(BadPatch));
+  }
+  let expected_body_len: u32 = {
+    // Little endian order yields the same numerical value at larger sizes,
+    // so a 4 byte buffer can be used for both a body_len_size of 2 and 4.
+    let mut buf = [0u8; size_of::<u32>()];
+    patch.read_exact(&mut buf[..body_len_size])?;
+    u32::from_le_bytes(buf)
+  };
+  if expected_body_len != (body_len as u32) {
+    return Ok(Err(BadPatch));
+  }
+  if !patch.has_reached_eof()? {
+    return Ok(Err(BadPatch));
+  }
+
+  Ok(Ok(true))
 }
 
 /// A PPF2 or PPF3 block check.

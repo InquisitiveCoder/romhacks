@@ -103,7 +103,7 @@ where
         rom.seek(SeekFrom::Start(source_position))?;
         try2!(
           rom
-            .take(source_len as u64)
+            .take(u64::from(source_len))
             .exactly(|rom| io::copy(rom, &mut buffers.superstring))
             .map_rom_err()?
         );
@@ -117,7 +117,7 @@ where
           output
             .read_from_inner(|output: &mut PositionTracker<&mut dyn Read>| {
               output
-                .take(source_len as u64)
+                .take(u64::from(source_len))
                 .exactly(|output| output.copy_to_slice(&mut buffers.superstring))
             })
             .map_patch_err()?
@@ -130,7 +130,7 @@ where
     };
 
     let encoding_len: u32 = patch.read_integer()?;
-    let mut patch = patch.take(encoding_len as u64);
+    let mut patch = patch.take(u64::from(encoding_len));
 
     let target_window_len: u32 = try2!(patch.read_integer().map_patch_err()?);
     buffers
@@ -152,19 +152,19 @@ where
     let addresses_len: u32 = try2!(patch.read_integer().map_patch_err()?);
     try2!(
       (&mut patch)
-        .take(data_len as u64)
+        .take(u64::from(data_len))
         .exactly(|patch| io::copy(patch, &mut buffers.add_and_run_data))
         .map_patch_err()?
     );
     try2!(
       (&mut patch)
-        .take(instructions_len as u64)
+        .take(u64::from(instructions_len))
         .exactly(|patch| io::copy(patch, &mut buffers.instructions_and_sizes))
         .map_patch_err()?
     );
     try2!(
       (&mut patch)
-        .take(addresses_len as u64)
+        .take(u64::from(addresses_len))
         .exactly(|patch| io::copy(patch, &mut buffers.copy_addresses))
         .map_patch_err()?
     );
@@ -200,7 +200,7 @@ where
         );
         try2!(
           (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
-            io::copy(&mut io::repeat(byte).take(size as u64), &mut dest)
+            io::copy(&mut io::repeat(byte).take(u64::from(size)), &mut dest)
           })?
         );
       }
@@ -209,7 +209,7 @@ where
         try2!(
           (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
             (&mut cursors.add_and_run_data)
-              .take(size as u64)
+              .take(u64::from(size))
               .exactly(|data| io::copy(data, &mut dest))
           })?
         );
@@ -220,10 +220,10 @@ where
         let address = try2!(cursors.copy_addresses.decode(here, mode).map_patch_err()?);
         try2!(
           (cursors.superstring).write_bytes(size, |source: &[u8], mut dest: &mut [u8]| {
-            let sequence_len = u32::min(address + size, source.len() as u32) as usize;
-            let periodic_sequence: &[u8] = &source[address as usize..sequence_len];
+            let sequence_len = u32::min(address + size, source.len() as u32);
+            let periodic_sequence: &[u8] = &source[address as usize..sequence_len as usize];
             (&mut read_write_utils::repeat::RepeatSlice::new(periodic_sequence))
-              .take(sequence_len as u64)
+              .take(u64::from(sequence_len))
               .exactly(|data| io::copy(data, &mut dest))?;
             Ok(())
           })?
@@ -342,7 +342,7 @@ struct WindowCursor<'a> {
 impl<'a> WindowCursor<'a> {
   pub fn new(buffer: &'a mut [u8], source_len: u32) -> Self {
     let mut cursor = io::Cursor::new(buffer);
-    cursor.set_position(source_len as u64);
+    cursor.set_position(u64::from(source_len));
     Self { cursor, source_len }
   }
 
@@ -369,7 +369,7 @@ impl<'a> WindowCursor<'a> {
     let (written, unwritten): (&[u8], &mut [u8]) =
       try2!(self.split_for_write(size).ok_or(BadPatch));
     let result = try2!(update_fn(written, unwritten).map_patch_err()?);
-    self.cursor.set_position((position + size) as u64);
+    self.cursor.set_position(u64::from(position + size));
     Ok(Ok(result))
   }
 

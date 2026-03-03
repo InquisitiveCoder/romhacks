@@ -5,10 +5,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::io::prelude::*;
 use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
-use std::io::{
-  copy, BufReader, BufWriter, Cursor, Empty, Error, Sink, StderrLock, StdoutLock, Take,
-};
-use std::ops::DerefMut;
+use std::io::{copy, BufWriter, Cursor, Empty, Error, Sink, StderrLock, StdoutLock, Take};
 
 pub trait ReadExt: Read {
   fn copy_to(&mut self, writer: &mut impl Write) -> io::Result<u64> {
@@ -127,29 +124,15 @@ pub trait ReadExt: Read {
   ///
   /// [1]: ReadExt::copy_to_slice
   fn read_array<const N: usize>(&mut self) -> io::Result<[u8; N]> {
+    let limit = u64::try_from(N).map_err(|_| InvalidInput)?;
     let mut arr = [0u8; N];
     self
-      .take(N as u64)
+      .take(limit)
       .exactly(|reader| reader.copy_to_slice(&mut arr[..]))
       .map(|_| arr)
   }
 }
 impl<R: Read> ReadExt for R {}
-
-#[cfg(test)]
-mod test {
-  use super::*;
-  use std::io::BufReader;
-
-  #[test]
-  fn copy_to_slice_multiple_reads() {
-    let mut cursor = BufReader::with_capacity(2, Cursor::new(vec![1u8, 2, 3, 4, 5]));
-    let mut buf = [0u8; 5];
-    let bytes_copied = cursor.copy_to_slice(&mut buf).unwrap();
-    assert_eq!(bytes_copied as usize, buf.len());
-    assert_eq!(cursor.get_ref().get_ref().as_slice(), &buf[..])
-  }
-}
 
 pub trait BufReadExt: BufRead {
   /// Checks if `self` has reached EOF.
@@ -214,9 +197,37 @@ pub trait BufReadExt: BufRead {
     let amount: i64 = i64::try_from(amount).map_err(|_| InvalidInput)?;
     // The cast to u64 is safe since 0 <= amount <= i64::MAX < u64::MAX.
     let bytes_read = copy(&mut self.take(amount as u64), writer)?;
-    self.seek_relative(-amount)?;
-    // This cast is also safe since bytes_read <= amount.
+    // These casts are also safe since bytes_read <= amount.
+    self.seek_relative(-(bytes_read as i64))?;
     Ok(bytes_read as usize)
+  }
+
+  /// Returns the result of calling [`self.look_ahead(N, &mut buf)`][1], where
+  /// `buf` is a [`Cursor<[u8; N]>`][2].
+  ///
+  /// [1]: BufReadExt::look_ahead
+  /// [2]: Cursor
+  fn peek_bytes<const N: usize>(&mut self) -> io::Result<Cursor<[u8; N]>>
+  where
+    Self: Seek,
+  {
+    let mut buf = Cursor::new([0u8; N]);
+    self.look_ahead(N, &mut buf)?;
+    Ok(buf)
+  }
+
+  /// Calls [`self.peek_bytes::<N>()`][1] and compares the result to `slice`.
+  ///
+  /// # Panics
+  /// Panics if `slice.len() > N`.
+  ///
+  /// [1]: BufReadExt::peek_bytes
+  fn next_bytes_eq<const N: usize>(&mut self, slice: &[u8]) -> io::Result<bool>
+  where
+    Self: Seek,
+  {
+    assert!(slice.len() <= N);
+    Ok(self.peek_bytes::<N>()?.slice_until_pos() == slice)
   }
 
   /// Uses [`look_ahead`][1] to compare the number of remaining bytes to
@@ -397,5 +408,98 @@ impl<W: AsRead> AsRead for &mut W {
   fn as_read(&mut self) -> io::Result<&mut dyn Read> {
     self.flush()?;
     <W as AsRead>::as_read(self)
+  }
+}
+
+pub trait CursorExt {
+  fn slice_until_pos(&self) -> &[u8];
+}
+
+impl<T: AsRef<[u8]>> CursorExt for Cursor<T> {
+  fn slice_until_pos(&self) -> &[u8] {
+    let position = usize::try_from(self.position()).unwrap();
+    &self.get_ref().as_ref()[..position]
+  }
+}
+
+#[cfg(test)]
+mod test {
+  use super::*;
+  use std::io::BufReader;
+
+  #[test]
+  fn copy_to_slice_multiple_reads() {
+    let mut cursor = BufReader::with_capacity(2, Cursor::new(vec![1u8, 2, 3, 4, 5]));
+    let mut buf = [0u8; 5];
+    let bytes_copied = cursor.copy_to_slice(&mut buf).unwrap();
+    assert_eq!(bytes_copied as usize, buf.len());
+    assert_eq!(cursor.get_ref().get_ref().as_slice(), &buf[..])
+  }
+
+  #[test]
+  fn test_cursor_as_slice() {
+    let mut cursor = Cursor::new(vec![1u8, 2, 3, 4, 5]);
+    cursor.set_position(3);
+    assert_eq!(cursor.slice_until_pos(), &[1u8, 2, 3]);
+  }
+
+  #[test]
+  fn look_ahead_full_read() {
+    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
+    let mut buf = Cursor::new([0u8; 5]);
+    reader.set_position(1);
+    let bytes_read = reader.look_ahead(3, &mut buf).unwrap();
+    assert_eq!(reader.position(), 1);
+    assert_eq!(bytes_read, 3);
+    assert_eq!(buf.slice_until_pos(), &[1, 2, 3]);
+  }
+
+  #[test]
+  fn look_ahead_eof() {
+    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
+    let mut buf = Cursor::new([0u8; 5]);
+    reader.set_position(3);
+    let bytes_read = reader.look_ahead(3, &mut buf).unwrap();
+    assert_eq!(reader.position(), 3);
+    assert_eq!(bytes_read, 2);
+    assert_eq!(buf.slice_until_pos(), &[3, 4]);
+  }
+
+  #[test]
+  fn peek_bytes_full_read() {
+    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
+    reader.set_position(1);
+    let bytes = reader.peek_bytes::<3>().unwrap();
+    assert_eq!(reader.position(), 1);
+    assert_eq!(bytes.get_ref().len(), 3);
+    assert_eq!(bytes.position(), 3);
+    assert_eq!(bytes.slice_until_pos(), &[1, 2, 3]);
+  }
+
+  #[test]
+  fn peek_bytes_eof() {
+    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
+    reader.set_position(3);
+    let bytes = reader.peek_bytes::<3>().unwrap();
+    assert_eq!(reader.position(), 3);
+    assert_eq!(bytes.get_ref().len(), 3);
+    assert_eq!(bytes.position(), 2);
+    assert_eq!(bytes.slice_until_pos(), &[3, 4]);
+  }
+
+  #[test]
+  fn next_bytes_eq_full_read() {
+    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
+    reader.set_position(1);
+    assert!(reader.next_bytes_eq::<3>(&[1, 2, 3]).unwrap());
+    assert_eq!(reader.position(), 1);
+  }
+
+  #[test]
+  fn next_bytes_eq_eof() {
+    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
+    reader.set_position(3);
+    assert!(reader.next_bytes_eq::<3>(&[3, 4]).unwrap());
+    assert_eq!(reader.position(), 3);
   }
 }

@@ -158,7 +158,9 @@ impl Patcher {
     O: BufWrite + AsRead,
   {
     let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
-    let mut patch = HashingReader::new(patch, CRC32Hasher::new());
+    // Need to look ahead in the patch file for magic strings, so some bytes
+    // will be read more than once.
+    let mut patch = MonotonicHashingReader::new(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
     ppf::patch(&mut rom, &mut patch, &mut output, strict)??;
     io::copy(&mut rom, &mut io::sink())?;

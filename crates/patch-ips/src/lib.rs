@@ -47,13 +47,13 @@ pub fn patch(
     }
 
     // Copy the input file as is until the next patch hunk.
-    // If patching is unable to continue because the ROM is too small, replace
-    // the input and output with RepeatSlice and Sink and continue. Only return
-    // InputFileTooSmall if the patch appears to be valid.
     let rom_copy_result = rom
       .copy_to_other_until(offset.into(), &mut output)
       .map_rom_err()?;
     if let Err(InputFileTooSmall) = rom_copy_result {
+      // If patching is unable to continue because the ROM is too small, replace
+      // the input and output with RepeatSlice and Sink, then continue.
+      // Only return InputFileTooSmall if the patch appears to be valid.
       input_file_too_small = true;
       rom = {
         let pos = rom.position();
@@ -133,6 +133,7 @@ pub fn patch(
       if truncated_size < output.position() || !patch.has_reached_eof()? {
         return Ok(Err(BadPatch));
       }
+      // TODO handle this ROM copy
       try2!(
         rom
           .copy_to_other_until(truncated_size, &mut output)
