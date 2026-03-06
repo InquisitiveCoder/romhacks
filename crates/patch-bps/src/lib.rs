@@ -1,17 +1,19 @@
 use byteorder::{ReadBytesExt, LE};
+use patch::BPSPatch;
 use read_write_hashers::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
 use read_write_utils::repeat::RepeatSlice;
 use result_result_try::try2;
 use rompatcher_crc32_utils::{CRC32Hasher, Crc32};
 use rompatcher_err::prelude::*;
-use rompatcher_near_utils::varint::{DecodingError, ReadNumber};
+use rompatcher_near_utils::{DecodingError, NearPatch};
 use rompatcher_near_utils::{PatchReport, FOOTER_LEN};
 use std::cmp::Ordering;
 use std::io;
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::num::NonZeroU64;
+use std::ops::{Deref, DerefMut};
 use PatchingError as PErr;
 use PatchingError::*;
 
@@ -34,7 +36,10 @@ where
   patch.seek(SeekFrom::Start(0))?;
 
   let mut rom = PositionTracker::from_start(MonotonicHashingReader::new(rom, CRC32Hasher::new()));
-  let mut patch = PositionTracker::from_start(HashingReader::new(patch, CRC32Hasher::new()));
+  let mut patch = BPSPatch::new(PositionTracker::from_start(HashingReader::new(
+    patch,
+    CRC32Hasher::new(),
+  )));
   let mut output = PositionTracker::from_start(HashingWriter::new(output_file, CRC32Hasher::new()));
 
   if &(try2!(patch.read_array::<4>().map_patch_err::<PatchingError>()?)) != b"BPS1" {
@@ -55,13 +60,17 @@ where
     &mut rom,
     &mut patch,
     &mut output,
-    &start_of_footer,
+    start_of_footer,
     expected_source_size,
   );
 
   // Check if the patch is valid before returning any errors from apply_patch.
   // An InputFileTooSmall error is a false positive if the patch is corrupt.
-  patch.copy_until(start_of_footer, &mut io::sink())?;
+  try2!(
+    patch
+      .copy_until(start_of_footer, &mut io::sink())
+      .map_patch_err::<PatchingError>()?
+  );
   let expected_source_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<PErr>()?));
   let expected_target_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<PErr>()?));
   let patch_internal_crc32 = patch.hasher().finish();
@@ -119,9 +128,9 @@ where
 
 fn apply_patch<O>(
   rom: &mut PositionTracker<MonotonicHashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>,
-  patch: &mut PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>,
+  patch: &mut BPSPatch<PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>>,
   mut output: &mut PositionTracker<HashingWriter<&mut O, CRC32Hasher>>,
-  start_of_footer: &u64,
+  start_of_footer: u64,
   expected_source_size: u64,
 ) -> io::Result<Result<(), PatchingError>>
 where
@@ -222,51 +231,73 @@ where
   Ok(Ok(()))
 }
 
-trait ReadBPS: Read + ReadNumber {
-  fn decode_command(&mut self) -> io::Result<Result<Command, DecodingError>> {
-    use io::ErrorKind::InvalidData;
-    let encoded: u64 = try2!(self.read_number()?);
-    let length = NonZeroU64::new((encoded >> 2) + 1).ok_or(InvalidData)?;
-    Ok(Ok(match encoded & 3 {
-      0 => Command::SourceRead { length },
-      1 => Command::TargetRead { length },
-      2 => Command::SourceCopy { length, offset: try2!(self.read_signed()?) },
-      3 => Command::TargetCopy { length, offset: try2!(self.read_signed()?) },
-      _ => unreachable!(),
-    }))
-  }
-
-  fn read_signed(&mut self) -> io::Result<Result<i64, DecodingError>> {
-    let data: u64 = try2!(self.read_number()?);
-    Ok(Ok(i64_from_sign_and_magnitude(data)))
-  }
-}
-
-fn i64_from_sign_and_magnitude(x: u64) -> i64 {
-  // A 63-bit unsigned value always fits in an i64.
-  (if x & 1 == 1 { -1 } else { 1 }) * (x >> 1) as i64
-}
-
-#[cfg(test)]
-mod tests {
+mod patch {
   use super::*;
-  #[test]
-  fn test_zero() {
-    assert_eq!(0, i64_from_sign_and_magnitude(0))
+
+  pub struct BPSPatch<R>(NearPatch<R>);
+
+  impl<R: BufRead> BPSPatch<R> {
+    pub fn new(rom: R) -> BPSPatch<R> {
+      BPSPatch(NearPatch::new(rom))
+    }
+
+    pub fn decode_command(&mut self) -> io::Result<Result<Command, DecodingError>> {
+      use io::ErrorKind::InvalidData;
+      let encoded: u64 = try2!(self.read_number()?);
+      let length = NonZeroU64::new((encoded >> 2) + 1).ok_or(InvalidData)?;
+      Ok(Ok(match encoded & 3 {
+        0 => Command::SourceRead { length },
+        1 => Command::TargetRead { length },
+        2 => Command::SourceCopy { length, offset: try2!(self.read_signed()?) },
+        3 => Command::TargetCopy { length, offset: try2!(self.read_signed()?) },
+        _ => unreachable!(),
+      }))
+    }
+
+    pub fn read_signed(&mut self) -> io::Result<Result<i64, DecodingError>> {
+      let data: u64 = try2!(self.read_number()?);
+      Ok(Ok(i64_from_sign_and_magnitude(data)))
+    }
   }
 
-  #[test]
-  fn test_max_positive() {
-    assert_eq!(i64::MAX, i64_from_sign_and_magnitude(0xFFFFFFFFFFFFFFFEu64))
+  impl<T> Deref for BPSPatch<T> {
+    type Target = NearPatch<T>;
+
+    fn deref(&self) -> &Self::Target {
+      &self.0
+    }
   }
 
-  #[test]
-  fn test_max_negative() {
-    assert_eq!(i64::MIN + 1, i64_from_sign_and_magnitude(u64::MAX))
+  impl<T> DerefMut for BPSPatch<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+      &mut self.0
+    }
+  }
+
+  fn i64_from_sign_and_magnitude(x: u64) -> i64 {
+    // A 63-bit unsigned value always fits in an i64.
+    (if x & 1 == 1 { -1 } else { 1 }) * (x >> 1) as i64
+  }
+
+  #[cfg(test)]
+  mod tests {
+    use super::*;
+    #[test]
+    fn test_zero() {
+      assert_eq!(0, i64_from_sign_and_magnitude(0))
+    }
+
+    #[test]
+    fn test_max_positive() {
+      assert_eq!(i64::MAX, i64_from_sign_and_magnitude(0xFFFFFFFFFFFFFFFEu64))
+    }
+
+    #[test]
+    fn test_max_negative() {
+      assert_eq!(i64::MIN + 1, i64_from_sign_and_magnitude(u64::MAX))
+    }
   }
 }
-
-impl<R: Read> ReadBPS for R {}
 
 enum Command {
   SourceRead { length: NonZeroU64 },

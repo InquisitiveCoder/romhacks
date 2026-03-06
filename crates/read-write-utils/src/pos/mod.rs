@@ -159,15 +159,20 @@ impl<R: Read> PositionTracker<R> {
   }
 
   /// [`Copies`][1] bytes from the inner reader of this [`PositionTracker`] to
-  /// `writer` until the reader reaches `SeekFrom::Start(offset)`.
+  /// `writer` until the reader reaches `SeekFrom::Start(pos)`.
   ///
   /// Equivalent to using [`self.take_from_inner_until`][2],
   /// [`TakeExt::exactly`] and [`copy`].
   ///
+  /// # Errors
+  /// * [`take_from_inner_until`][2] can return [`InvalidData`].
+  /// * [`TakeExt::exactly`] can return [`UnexpectedEof`].
+  /// * Any error returned by [`copy`].
+  ///
   /// [1]: copy
-  /// [2]: Self::take_from_inner
-  pub fn copy_until(&mut self, offset: u64, writer: &mut impl Write) -> Result<u64> {
-    self.take_from_inner_until(offset, |take| take.exactly(|reader| copy(reader, writer)))
+  /// [2]: Self::take_from_inner_until
+  pub fn copy_until(&mut self, pos: u64, writer: &mut impl Write) -> Result<u64> {
+    self.take_from_inner_until(pos, |take| take.exactly(|reader| copy(reader, writer)))
   }
 
   /// [`Copies`][1] exactly `amount` bytes from the inner reader and writer of
@@ -175,6 +180,10 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// Equivalent to using [`self.take_from_inner`][2], [`TakeExt::exactly`] and
   /// [`writer.copy_from`][3].
+  ///
+  /// # Errors
+  /// * [`TakeExt::exactly`] can return [`UnexpectedEof`].
+  /// * Any error returned by [`copy`].
   ///
   /// [1]: copy
   /// [2]: Self::take_from_inner
@@ -208,7 +217,7 @@ impl<R: Read> PositionTracker<R> {
     })
   }
 
-  /// Calls [`Read::take()`] on the inner reader and applies it to `f`.
+  /// Calls [`Read::take`] on the inner reader and applies it to `f`.
   ///
   /// Generic code should prefer using this function over `self.take()`, since
   /// passing a `Take<PositionTracker<_>>` (or any other non-`std` reader or
@@ -251,6 +260,7 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// # Examples
   /// ```
+  /// use std::io;
   /// use std::io::prelude::*;
   /// use std::io::{copy, Cursor};
   /// use read_write_utils::prelude::*;
@@ -263,6 +273,9 @@ impl<R: Read> PositionTracker<R> {
   /// }).unwrap();
   /// assert_eq!(bytes_copied, 2);
   /// assert_eq!(&output[..], &[1, 2]);
+  ///
+  /// let error = reader.take_from_inner_until(0, |take| Ok(()));
+  /// assert!(error.is_err_and(|err| err.kind() == io::ErrorKind::InvalidInput));
   /// ```
   pub fn take_from_inner_until<T, F>(&mut self, pos: u64, f: F) -> Result<T>
   where

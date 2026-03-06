@@ -8,11 +8,12 @@ use read_write_utils::prelude::*;
 use result_result_try::try2;
 use rompatcher_crc32_utils::{CRC32Hasher, Crc32};
 use rompatcher_err::prelude::*;
-use rompatcher_near_utils::varint::{DecodingError, ReadNumber};
+use rompatcher_near_utils::{DecodingError, NearPatch};
 use rompatcher_near_utils::{PatchReport, FOOTER_LEN};
 use std::cmp::Ordering;
 use std::io::prelude::*;
 use std::io::ErrorKind::Interrupted;
+use std::io::SeekFrom;
 use std::{io, iter};
 use wide::u8x16;
 use PatchingError as E;
@@ -30,13 +31,16 @@ pub fn patch(
 ) -> io::Result<Result<PatchReport, PatchingError>> {
   let start_of_footer: u64 = try2!(
     patch
-      .seek(io::SeekFrom::End(-(FOOTER_LEN as i64)))
-      .map_patch_err::<E>()?
+      .seek(SeekFrom::End(-(FOOTER_LEN as i64)))
+      .map_patch_err::<PatchingError>()?
   );
-  patch.seek(io::SeekFrom::Start(0))?;
+  patch.seek(SeekFrom::Start(0))?;
 
   let mut rom = PositionTracker::from_start(HashingReader::new(rom, CRC32Hasher::new()));
-  let mut patch = PositionTracker::from_start(HashingReader::new(patch, CRC32Hasher::new()));
+  let mut patch = NearPatch::new(PositionTracker::from_start(HashingReader::new(
+    patch,
+    CRC32Hasher::new(),
+  )));
   let mut output = PositionTracker::from_start(HashingWriter::new(output, CRC32Hasher::new()));
 
   if &(try2!(patch.read_array::<4>().map_patch_err::<PatchingError>()?)) != b"UPS1" {
@@ -59,7 +63,7 @@ pub fn patch(
   try2!(
     patch
       .copy_until(start_of_footer, &mut io::sink())
-      .map_patch_err::<E>()?
+      .map_patch_err::<PatchingError>()?
   );
   let expected_source_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
   let expected_target_crc32 = Crc32::new(try2!(patch.read_u32::<LE>().map_patch_err::<E>()?));
@@ -118,7 +122,7 @@ pub fn patch(
 
 fn apply_patch(
   mut rom: &mut PositionTracker<HashingReader<&mut impl BufRead, CRC32Hasher>>,
-  mut patch: &mut PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>,
+  patch: &mut NearPatch<PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>>,
   mut output: &mut PositionTracker<HashingWriter<&mut impl BufWrite, CRC32Hasher>>,
   start_of_footer: &u64,
   expected_target_size: u64,
@@ -140,7 +144,7 @@ fn apply_patch(
     );
     try2!(apply_patch_block(
       &mut rom,
-      &mut patch,
+      patch.inner_mut(),
       &mut output,
       &mut output_buf
     )?);
