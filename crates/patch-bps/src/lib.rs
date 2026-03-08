@@ -35,7 +35,8 @@ where
   );
   patch.seek(SeekFrom::Start(0))?;
 
-  let mut rom = PositionTracker::from_start(MonotonicHashingReader::new(rom, CRC32Hasher::new()));
+  let mut rom =
+    PositionTracker::from_start(MonotonicHashingReader::from_start(rom, CRC32Hasher::new()));
   let mut patch = BPSPatch::new(PositionTracker::from_start(HashingReader::new(
     patch,
     CRC32Hasher::new(),
@@ -129,13 +130,12 @@ where
 fn apply_patch<O>(
   rom: &mut PositionTracker<MonotonicHashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>,
   patch: &mut BPSPatch<PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>>,
-  mut output: &mut PositionTracker<HashingWriter<&mut O, CRC32Hasher>>,
+  output: &mut PositionTracker<HashingWriter<&mut O, CRC32Hasher>>,
   start_of_footer: u64,
   expected_source_size: u64,
 ) -> io::Result<Result<(), PatchingError>>
 where
-  O: BufWrite + AsRead + Seek + ?Sized,
-  O: Sized,
+  O: BufWrite + AsRead + Seek,
 {
   let mut source_relative_offset: u64 = 0;
   let mut target_relative_offset: u64 = 0;
@@ -150,14 +150,14 @@ where
         rom.seek(SeekFrom::Start(output.position()))?;
         try2!(
           rom
-            .copy_to_other_exactly(length.get(), &mut output)
+            .copy_to_other_exactly(length.get(), output)
             .map_rom_err::<PErr>()?
         );
       }
       Command::TargetRead { length } => {
         try2!(
           patch
-            .copy_to_other_exactly(length.get(), &mut output)
+            .copy_to_other_exactly(length.get(), output)
             .map_patch_err::<PErr>()?
         );
       }
@@ -173,7 +173,7 @@ where
         rom.seek(SeekFrom::Start(source_relative_offset))?;
         try2!(
           rom
-            .copy_to_other_exactly(length.get(), &mut output)
+            .copy_to_other_exactly(length.get(), output)
             .map_rom_err::<PErr>()?
         );
         source_relative_offset = try2!(
@@ -211,7 +211,7 @@ where
 
         RepeatSlice::new(&target_copy_buffer[..])
           .take(length.get())
-          .copy_to_inner_of(&mut output)?;
+          .copy_to_inner_of(output)?;
         target_copy_buffer.clear();
         target_relative_offset = try2!(
           target_relative_offset

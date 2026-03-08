@@ -51,7 +51,7 @@ impl Args {
     };
 
     let game_name: ffi::OsString =
-      ffi::OsString::from(filename::infer_game_name(&rom.get_ref().path()));
+      ffi::OsString::from(filename::infer_game_name(rom.get_ref().path()));
     let manifest_path: ffi::OsString = {
       let mut buf = ffi::OsString::from(&game_name);
       buf.push(" (patched).romhacks.kdl");

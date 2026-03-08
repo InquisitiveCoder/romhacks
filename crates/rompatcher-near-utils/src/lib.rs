@@ -38,7 +38,7 @@ impl<R: BufRead> NearPatch<R> {
         return Ok(Ok(new_value));
       }
       // equivalent to `shift << 7`, but multiplication will check for overflow
-      shift = shift * 128;
+      shift *= 128;
       // BPS and UPS subtract 1 after encoding each byte.
       // Adding the shift after decoding each byte reverses that operation.
       data = try2!((new_value + shift).ok_or_else(DecodingError::new));
@@ -76,6 +76,12 @@ pub struct DecodingError(());
 impl DecodingError {
   pub fn new() -> Self {
     DecodingError(())
+  }
+}
+
+impl Default for DecodingError {
+  fn default() -> Self {
+    Self::new()
   }
 }
 

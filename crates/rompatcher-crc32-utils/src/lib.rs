@@ -49,3 +49,9 @@ impl Hasher for CRC32Hasher {
     self.update(bytes);
   }
 }
+
+impl Default for CRC32Hasher {
+  fn default() -> Self {
+    Self::new()
+  }
+}

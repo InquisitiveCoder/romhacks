@@ -3,6 +3,8 @@ use std::hash::Hasher;
 use std::io;
 use std::io::prelude::*;
 
+pub type WriteHasher<H> = HashingWriter<io::Sink, H>;
+
 /// A [`Write`] adapter that hashes the bytes written to its underlying writer.
 pub struct HashingWriter<W, H> {
   inner: W,
@@ -92,6 +94,12 @@ impl<I: AsRead, H: Hasher> AsRead for HashingWriter<I, H> {
 impl<W: Seek, H> Seek for HashingWriter<W, H> {
   fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
     self.inner.seek(pos)
+  }
+}
+
+impl<H: Hasher> From<H> for HashingWriter<io::Sink, H> {
+  fn from(hasher: H) -> Self {
+    Self::new(io::sink(), hasher)
   }
 }
 

@@ -2,7 +2,15 @@ use std::hash::Hasher;
 use std::io;
 use std::io::prelude::*;
 
-/// A [`Read`] adapter that hashes the bytes read from its underlying reader.
+/// A [`Read`] adapter that hashes bytes [`read`][1] or [`consumed`][2] from its
+/// underlying reader.
+///
+/// If you need to hash every byte in a reader while also seeking back and forth,
+/// consider using [`MonotonicHashingReader`][3].
+///
+/// [1]: Read::read
+/// [2]: BufRead::consume
+/// [3]: crate::MonotonicHashingReader
 pub struct HashingReader<R, H> {
   inner: R,
   hasher: H,
@@ -66,9 +74,13 @@ where
     if amt == 0 {
       return;
     }
-    // Since amt > 0 and amt <= than the number of bytes in the buffer, this
-    // call to fill_buf() must return the buffer without refilling it.
-    let buf = self.inner.fill_buf().unwrap();
+    // Since amt > 0, the reader must've returned a non-empty buffer during the
+    // previous call to fill_buf, and must return it again without attempting to
+    // refill it.
+    let buf = self.inner.fill_buf().expect(
+      "consume must be called after fill_buf and amt must be <= \
+              the number of bytes in the buffer.",
+    );
     self.hasher.write(&buf[..amt]);
     self.inner.consume(amt)
   }

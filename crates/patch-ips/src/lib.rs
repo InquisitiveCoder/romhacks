@@ -1,4 +1,4 @@
-//! Documentation: https://zerosoft.zophar.net/ips.php
+//! IPS format documentation: <https://zerosoft.zophar.net/ips.php>
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, BE};
 use read_write_utils::prelude::*;
@@ -69,7 +69,7 @@ pub fn patch(
       };
       // Finish the copy so that rom and output reach the same position as if
       // the initial copy had succeeded.
-      if let Err(_) = rom.copy_to_other_until(offset.into(), &mut output) {
+      if rom.copy_to_other_until(offset.into(), &mut output).is_err() {
         unreachable!("A copy from RepeatSlice to Sink should never fail.");
       }
     } else {
@@ -133,7 +133,6 @@ pub fn patch(
       if truncated_size < output.position() || !patch.has_reached_eof()? {
         return Ok(Err(BadPatch));
       }
-      // TODO handle this ROM copy
       try2!(
         rom
           .copy_to_other_until(truncated_size, &mut output)

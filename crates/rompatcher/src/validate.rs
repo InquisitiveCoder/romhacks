@@ -8,7 +8,7 @@ pub struct Args {
 }
 
 impl Args {
-  pub fn call(self) -> Result<(), kdl::CheckFailure> {
+  pub fn call(self) -> Result<(), Box<kdl::CheckFailure>> {
     kdl::Schema::parse(manifest::SCHEMA)
       .unwrap()
       .check_file_matches(self.manifest_path)?;

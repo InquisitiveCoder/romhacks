@@ -1,4 +1,4 @@
-//! Format documentation: https://www.romhacking.net/documents/392/
+//! UPS format documentation: <https://www.romhacking.net/documents/392/>
 
 use aligned_vec::{avec, AVec, CACHELINE_ALIGN};
 use byteorder::{ReadBytesExt, LE};
@@ -54,7 +54,7 @@ pub fn patch(
     &mut rom,
     &mut patch,
     &mut output,
-    &start_of_footer,
+    start_of_footer,
     expected_target_size,
   );
 
@@ -122,9 +122,9 @@ pub fn patch(
 
 fn apply_patch(
   mut rom: &mut PositionTracker<HashingReader<&mut impl BufRead, CRC32Hasher>>,
-  patch: &mut NearPatch<PositionTracker<HashingReader<&mut (impl BufRead + Seek), CRC32Hasher>>>,
+  patch: &mut NearPatch<PositionTracker<HashingReader<&mut impl BufRead, CRC32Hasher>>>,
   mut output: &mut PositionTracker<HashingWriter<&mut impl BufWrite, CRC32Hasher>>,
-  start_of_footer: &u64,
+  start_of_footer: u64,
   expected_target_size: u64,
 ) -> io::Result<Result<(), PatchingError>> {
   let mut output_buf: AVec<u8> = avec![];
@@ -136,10 +136,7 @@ fn apply_patch(
         // As a minor optimization, apply_patch_block doesn't XOR the 0x00
         // delimiter with the corresponding ROM byte. Therefore, one extra byte
         // needs to be copied on subsequent iterations.
-        .copy_to_other_exactly(
-          u64::from(is_subsequent_iteration) + relative_offset,
-          &mut output,
-        )
+        .copy_to_other_exactly(u64::from(is_subsequent_iteration) + relative_offset, output,)
         .map_rom_err::<E>()?
     );
     try2!(apply_patch_block(
@@ -157,7 +154,7 @@ fn apply_patch(
 
   try2!(
     rom
-      .copy_to_other_until(expected_target_size, &mut output)
+      .copy_to_other_until(expected_target_size, output)
       .map_rom_err::<E>()?
   );
 
@@ -175,7 +172,7 @@ fn apply_patch_block(
   // the end-of-block delimiter (0x00) is found.
   loop {
     let patch_read_buf: &[u8] = match patch.fill_buf() {
-      Ok(buf) if buf.is_empty() => return Ok(Err(BadPatch)), // EOF
+      Ok([]) => return Ok(Err(BadPatch)), // EOF
       Ok(buf) => buf,
       Err(e) if e.kind() == Interrupted => continue,
       Err(e) => return Err(e),

@@ -44,7 +44,7 @@ where
     }
   }
 
-  /// Returns the inner [`RangeBound`].
+  /// Returns the inner [`RangeBounds`].
   pub fn into_inner(self) -> R {
     self.0
   }

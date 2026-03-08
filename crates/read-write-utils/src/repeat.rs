@@ -1,8 +1,8 @@
 use std::io;
 use std::io::prelude::*;
 
-/// A [reader] that yields the bytes in a slice infinitely, as [`Repeat`] does
-/// for a single byte.
+/// A [reader] that yields the bytes in a slice infinitely, as [`Repeat`][1]
+/// does for a single byte.
 ///
 ///  # Examples
 /// ```
@@ -20,7 +20,7 @@ use std::io::prelude::*;
 /// ```
 ///
 /// [reader]: Read
-/// [Repeat]: [std::read-write-utils::Repeat]
+/// [1]: io::Repeat
 pub struct RepeatSlice<'a> {
   cursor: io::Cursor<&'a [u8]>,
 }
@@ -32,7 +32,7 @@ impl<'a> RepeatSlice<'a> {
   /// This function panics if `slice.len() == 0` or
   /// `u64::try_from(slice.len()).is_err()`
   pub fn new(slice: &'a [u8]) -> Self {
-    assert!(0 < slice.len() && u64::try_from(slice.len()).is_ok());
+    assert!(!slice.is_empty() && u64::try_from(slice.len()).is_ok());
     Self { cursor: io::Cursor::new(slice) }
   }
 
@@ -46,15 +46,12 @@ impl Read for RepeatSlice<'_> {
     if self.slice().len() == 1 {
       return io::repeat(self.slice()[0]).read(buf);
     }
-
-    loop {
-      let read = self.cursor.read(buf)?;
-      // The u64 cast was checked in RepeatSlice::new.
-      if self.cursor.position() == self.slice().len() as u64 {
-        self.cursor.set_position(0);
-      }
-      return Ok(read);
+    let read_amt = self.cursor.read(buf)?;
+    // The u64 cast was checked in RepeatSlice::new.
+    if self.cursor.position() == self.slice().len() as u64 {
+      self.cursor.set_position(0);
     }
+    Ok(read_amt)
   }
 }
 

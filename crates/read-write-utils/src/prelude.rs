@@ -1,5 +1,7 @@
 pub use super::pos::{PositionTracker, PositionTrackerReadExt};
+pub use crate::next_bytes_eq;
 use crate::DEFAULT_BUF_SIZE;
+use polonius_the_crab::prelude::*;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::io;
@@ -14,7 +16,7 @@ pub trait ReadExt: Read {
 
   /// Calls [`read`][1] repeatedly until `slice` is full or EOF is reached.
   ///
-  /// This is equivalent to using [`take`](Self::take) and [`copy`], but the
+  /// This is equivalent to using [`take`][2] and [`copy`], but the
   /// latter may allocate a redundant buffer if `self`'s type isn't capable of
   /// serving as a buffer for `copy`.
   ///
@@ -82,10 +84,11 @@ pub trait ReadExt: Read {
   /// ```
   ///
   /// [1]: Read::read
+  /// [2]: Take::take
   fn copy_to_slice(&mut self, mut slice: &mut [u8]) -> io::Result<u64> {
     let mut total: u64 = 0;
     loop {
-      match self.read(&mut slice) {
+      match self.read(slice) {
         Ok(0) => return Ok(total),
         Ok(read_amount) => {
           total = u64::try_from(read_amount)
@@ -140,7 +143,7 @@ pub trait BufReadExt: BufRead {
   /// Equivalent to `self.fill_buf()?.is_empty()`
   ///
   /// # Errors
-  /// This function returns any errors from [`Self::fill_buf()`].
+  /// This function returns any errors from [`fill_buf`][1].
   ///
   /// # Examples
   /// ```
@@ -153,6 +156,8 @@ pub trait BufReadExt: BufRead {
   /// cursor.set_position(3);
   /// assert!(cursor.has_reached_eof().unwrap());
   /// ```
+  ///
+  /// [1]: BufRead::fill_buf
   fn has_reached_eof(&mut self) -> io::Result<bool> {
     Ok(self.fill_buf()?.is_empty())
   }
@@ -163,7 +168,9 @@ pub trait BufReadExt: BufRead {
   /// otherwise, returns `Ok(Some(f(self)?))`.
   ///
   /// # Errors
-  /// This function returns any errors from [`Self::fill_buf()`] or `f`.
+  /// This function returns any errors from [`fill_buf`][1] or `f`.
+  ///
+  /// [1]: BufRead::fill_buf
   fn optionally<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<Option<R>> {
     if self.has_reached_eof()? {
       return Ok(None);
@@ -171,76 +178,97 @@ pub trait BufReadExt: BufRead {
     Ok(Some(f(self)?))
   }
 
-  /// Looks ahead by `amount` bytes.
+  /// Peeks at the next `buf.len()` bytes in the reader. The returned slice's
+  /// length can be smaller if EOF is reached.
   ///
-  /// This function attempts to copy up to `amount` bytes to `writer`, then does
-  /// a [`seek_relative`][1] by the number of bytes copied to return `self` to
-  /// its original position.
+  /// This method first attempts to return `buf.len()` bytes from `self`'s
+  /// [internal buffer][1]. Otherwise, [`self.copy_to_slice(buf)`][2] will be
+  /// called, followed by a backwards [`seek_relative`][3] to return `self` to
+  /// its former position.
   ///
-  /// This function is intended for relatively small lookahead amounts, such
-  /// that the [`copy`][2] and pos are likely to fall within the reader's
-  /// internal buffer. Additionally, in many use cases the lookahead amount is
-  /// derived from the length of a buffer or the size of a footer structure at
-  /// the end of the byte stream. For these reasons, `usize` was chosen as the
-  /// parameter and return type over `u64`.
+  /// For peeks much smaller than the size of the reader's internal buffer,
+  /// there's a high probability that the copy and seek are avoided.
+  ///
+  /// The [`next_bytes_eq!`] macro provides a convenient way to call `peek`
+  /// and compare the result to a `const` slice.
   ///
   /// # Errors
   /// This function returns [`InvalidInput`] if `amount` can't be converted to
-  /// an `i64`. Otherwise, see [`std::io::copy`] and [`Seek::seek_relative`].
+  /// an `i64`. Otherwise, see [`std::io::copy`] and [`seek_relative`][3].
   ///
-  /// [1]: Seek::seek_relative
-  /// [2]: std::io::copy
-  fn look_ahead(&mut self, amount: usize, writer: &mut impl Write) -> io::Result<usize>
+  /// # Examples
+  /// ```
+  /// use std::io::{Cursor, SeekFrom};
+  /// use std::io::prelude::*;
+  /// use read_write_utils::prelude::*;
+  ///
+  /// let mut reader = Cursor::new([0u8, 1, 2, 3, 4, 5, 6, 7]);
+  /// let mut buf = [0u8; 3];
+  /// assert_eq!(reader.peek(&mut buf[..]).unwrap(), &[0u8, 1, 2]);
+  /// reader.set_position(6);
+  /// assert_eq!(reader.peek(&mut buf[..]).unwrap(), &[6u8, 7]);
+  /// ```
+  ///
+  /// [1]: BufRead::fill_buf
+  /// [2]: ReadExt::copy_to_slice
+  /// [3]: Seek::seek_relative
+  /// [4]: next_bytes_eq
+  fn peek<'a>(&'a mut self, buf: &'a mut [u8]) -> io::Result<&'a [u8]>
   where
     Self: Seek,
   {
-    let amount: i64 = i64::try_from(amount).map_err(|_| InvalidInput)?;
-    // The cast to u64 is safe since 0 <= amount <= i64::MAX < u64::MAX.
-    let bytes_read = copy(&mut self.take(amount as u64), writer)?;
-    // These casts are also safe since bytes_read <= amount.
-    self.seek_relative(-(bytes_read as i64))?;
-    Ok(bytes_read as usize)
+    i64::try_from(buf.len()).map_err(|_| InvalidInput)?;
+    // the polonius macro seems to misbehave when its pseudo-parameter is self.
+    let mut reader = self;
+    polonius!(|reader| -> Result<&'polonius [u8], io::Error> {
+      let inner_buf = polonius_try!(reader.fill_buf());
+      if let Some(slice) = inner_buf.get(0..buf.len()) {
+        polonius_return!(Ok(slice));
+      }
+    });
+    let copy_amt = reader.copy_to_slice(buf)?;
+    // copy_amt <= buf.len() <= (i64::MAX and usize::MAX)
+    reader.seek_relative(-(copy_amt as i64))?;
+    Ok(&buf[0..copy_amt as usize])
   }
 
-  /// Returns the result of calling [`self.look_ahead(N, &mut buf)`][1], where
-  /// `buf` is a [`Cursor<[u8; N]>`][2].
+  /// [Compares][1] the remaining number of bytes in the reader to `amt`.
   ///
-  /// [1]: BufReadExt::look_ahead
-  /// [2]: Cursor
-  fn peek_bytes<const N: usize>(&mut self) -> io::Result<Cursor<[u8; N]>>
+  /// This method first compares the length of the slice returned by
+  /// [`fill_buf`][2]; if it's greater than `amt`, that result is returned.
+  /// Otherwise, [up to][3] `amt + 1` bytes are [copied][4] to a [`Sink`],
+  /// followed by a backwards [`seek_relative`][5] to return `self` to its
+  /// former position. The number of bytes copied is then compared to `amt`.
+  ///
+  /// If `amt` is much smaller than the size of the reader's internal buffer,
+  /// there's a high probability that the copy and seek are avoided.
+  ///
+  /// # Errors
+  /// If `amt + 1` can't be converted to an `i64`, this method returns
+  /// [`InvalidInput`]. Otherwise, see [`std::io::copy`] and
+  /// [`seek_relative`][5].
+  ///
+  /// [1]: Ord::cmp
+  /// [2]: BufRead::fill_buf
+  /// [3]: Take::take
+  /// [4]: io::copy
+  /// [5]: Seek::seek_relative
+  fn peek_len(&mut self, amt: usize) -> io::Result<Ordering>
   where
     Self: Seek,
   {
-    let mut buf = Cursor::new([0u8; N]);
-    self.look_ahead(N, &mut buf)?;
-    Ok(buf)
-  }
-
-  /// Calls [`self.peek_bytes::<N>()`][1] and compares the result to `slice`.
-  ///
-  /// # Panics
-  /// Panics if `slice.len() > N`.
-  ///
-  /// [1]: BufReadExt::peek_bytes
-  fn next_bytes_eq<const N: usize>(&mut self, slice: &[u8]) -> io::Result<bool>
-  where
-    Self: Seek,
-  {
-    assert!(slice.len() <= N);
-    Ok(self.peek_bytes::<N>()?.slice_until_pos() == slice)
-  }
-
-  /// Uses [`look_ahead`][1] to compare the number of remaining bytes to
-  /// `amount`.
-  ///
-  /// [1]: BufReadExt::look_ahead
-  fn cmp_remaining_len(&mut self, amount: usize) -> io::Result<Ordering>
-  where
-    Self: Seek,
-  {
-    self
-      .look_ahead(amount + 1, &mut io::sink())
-      .map(|bytes| bytes.cmp(&amount))
+    use Ordering::Greater;
+    let take_limit: i64 = i64::try_from(amt)
+      .ok()
+      .and_then(|x| i64::checked_add(x, 1))
+      .ok_or(InvalidInput)?;
+    if let Greater = self.fill_buf()?.len().cmp(&amt) {
+      return Ok(Greater);
+    }
+    // copy_amt <= amt + 1 <= i64::MAX < u64::MAX
+    let copy_amt = io::copy(&mut self.take(take_limit as u64), &mut io::sink())?;
+    self.seek_relative(-(copy_amt as i64))?;
+    Ok(copy_amt.cmp(&(amt as u64)))
   }
 }
 impl<R: BufRead> BufReadExt for R {}
@@ -326,6 +354,8 @@ pub trait AsRead: BufWrite {
   /// that `self` doesn't (e.g. [`Read`].) Writing directly to the inner writer
   /// without calling [`flush`][1] is likely to result in the data being
   /// written in an unintended order.
+  ///
+  /// [1]: Write::flush
   fn as_read(&mut self) -> io::Result<&mut dyn Read>;
 }
 
@@ -341,8 +371,8 @@ impl AsRead for Cursor<&mut [u8]> {
 
 impl BufWrite for Empty {}
 impl BufWrite for Sink {}
-impl<'a> BufWrite for StderrLock<'a> {}
-impl<'a> BufWrite for StdoutLock<'a> {}
+impl BufWrite for StderrLock<'_> {}
+impl BufWrite for StdoutLock<'_> {}
 
 impl BufWrite for Cursor<&mut Vec<u8>> {}
 impl AsRead for Cursor<&mut Vec<u8>> {
@@ -428,12 +458,13 @@ mod test {
   use std::io::BufReader;
 
   #[test]
-  fn copy_to_slice_multiple_reads() {
+  fn copy_to_slice_multiple_reads() -> io::Result<()> {
     let mut cursor = BufReader::with_capacity(2, Cursor::new(vec![1u8, 2, 3, 4, 5]));
     let mut buf = [0u8; 5];
-    let bytes_copied = cursor.copy_to_slice(&mut buf).unwrap();
+    let bytes_copied = cursor.copy_to_slice(&mut buf)?;
     assert_eq!(bytes_copied as usize, buf.len());
-    assert_eq!(cursor.get_ref().get_ref().as_slice(), &buf[..])
+    assert_eq!(cursor.get_ref().get_ref().as_slice(), &buf[..]);
+    Ok(())
   }
 
   #[test]
@@ -444,62 +475,22 @@ mod test {
   }
 
   #[test]
-  fn look_ahead_full_read() {
+  fn peek_full_read() -> io::Result<()> {
     let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
-    let mut buf = Cursor::new([0u8; 5]);
+    let mut buf = [0u8; 3];
     reader.set_position(1);
-    let bytes_read = reader.look_ahead(3, &mut buf).unwrap();
+    assert_eq!(reader.peek(&mut buf)?, &[1, 2, 3]);
     assert_eq!(reader.position(), 1);
-    assert_eq!(bytes_read, 3);
-    assert_eq!(buf.slice_until_pos(), &[1, 2, 3]);
+    Ok(())
   }
 
   #[test]
-  fn look_ahead_eof() {
+  fn peek_eof() -> io::Result<()> {
     let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
-    let mut buf = Cursor::new([0u8; 5]);
+    let mut buf = [0u8; 3];
     reader.set_position(3);
-    let bytes_read = reader.look_ahead(3, &mut buf).unwrap();
+    assert_eq!(reader.peek(&mut buf[..])?, &[3, 4]);
     assert_eq!(reader.position(), 3);
-    assert_eq!(bytes_read, 2);
-    assert_eq!(buf.slice_until_pos(), &[3, 4]);
-  }
-
-  #[test]
-  fn peek_bytes_full_read() {
-    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
-    reader.set_position(1);
-    let bytes = reader.peek_bytes::<3>().unwrap();
-    assert_eq!(reader.position(), 1);
-    assert_eq!(bytes.get_ref().len(), 3);
-    assert_eq!(bytes.position(), 3);
-    assert_eq!(bytes.slice_until_pos(), &[1, 2, 3]);
-  }
-
-  #[test]
-  fn peek_bytes_eof() {
-    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
-    reader.set_position(3);
-    let bytes = reader.peek_bytes::<3>().unwrap();
-    assert_eq!(reader.position(), 3);
-    assert_eq!(bytes.get_ref().len(), 3);
-    assert_eq!(bytes.position(), 2);
-    assert_eq!(bytes.slice_until_pos(), &[3, 4]);
-  }
-
-  #[test]
-  fn next_bytes_eq_full_read() {
-    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
-    reader.set_position(1);
-    assert!(reader.next_bytes_eq::<3>(&[1, 2, 3]).unwrap());
-    assert_eq!(reader.position(), 1);
-  }
-
-  #[test]
-  fn next_bytes_eq_eof() {
-    let mut reader = Cursor::new([0u8, 1, 2, 3, 4]);
-    reader.set_position(3);
-    assert!(reader.next_bytes_eq::<3>(&[3, 4]).unwrap());
-    assert_eq!(reader.position(), 3);
+    Ok(())
   }
 }

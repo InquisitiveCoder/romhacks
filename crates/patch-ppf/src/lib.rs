@@ -1,6 +1,7 @@
 use byteorder::{ReadBytesExt, LE};
 use checked_range::prelude::CheckedRange;
 use read_write_hashers::{HashingReader, HashingWriter};
+use read_write_utils::next_bytes_eq;
 use read_write_utils::prelude::*;
 use result_result_try::try2;
 use rompatcher_err::*;
@@ -230,7 +231,7 @@ impl<T: BufRead + Seek> Patch<PositionTracker<&mut T>> {
       Some(footer_body_len_size) => footer_body_len_size,
     };
 
-    if !self.next_bytes_eq::<{ BEGIN_MAGIC.len() }>(BEGIN_MAGIC)? {
+    if next_bytes_eq!(self, BEGIN_MAGIC)? {
       // The patch may have a footer, but it hasn't been reached.
       return Ok(Ok(false));
     }
@@ -246,7 +247,7 @@ impl<T: BufRead + Seek> Patch<PositionTracker<&mut T>> {
       return Ok(Err(BadPatch));
     }
     let body_len = body_len as u16; // safe because of the previous check
-    if &self.read_array::<{ END_MAGIC.len() }>()?[..] != END_MAGIC {
+    if !next_bytes_eq!(self, END_MAGIC)? {
       return Ok(Err(BadPatch));
     }
     let expected_body_len: u32 = {

@@ -32,7 +32,7 @@ where
   let output = PositionTracker::from_start(output);
 
   // header
-  if &(try2!(patch.read_array::<3>().map_patch_err()?)) != MAGIC {
+  if try2!(next_bytes_eq!(patch, MAGIC).map_patch_err()?) {
     return Ok(Err(BadPatch));
   }
 

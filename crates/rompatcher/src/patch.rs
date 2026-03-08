@@ -19,11 +19,11 @@ pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
   let magic = file.read_array::<3>()?;
   file.seek(SeekFrom::Start(0))?;
   let kind = match &magic[..] {
-    ips::MAGIC => Kind::IPS,
-    ups::MAGIC => Kind::UPS,
-    bps::MAGIC => Kind::BPS,
-    ppf::MAGIC => Kind::PPF,
-    vcd::MAGIC => Kind::VCD,
+    ips::MAGIC => Kind::Ips,
+    ups::MAGIC => Kind::Ups,
+    bps::MAGIC => Kind::Bps,
+    ppf::MAGIC => Kind::Ppf,
+    vcd::MAGIC => Kind::Vcd,
     _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
   };
   Ok(kind)
@@ -31,21 +31,21 @@ pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
 
 #[derive(Copy, Clone, Debug)]
 pub enum Kind {
-  IPS,
-  UPS,
-  BPS,
-  PPF,
-  VCD,
+  Ips,
+  Ups,
+  Bps,
+  Ppf,
+  Vcd,
 }
 
 impl fmt::Display for Kind {
   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match self {
-      Kind::IPS => write!(f, "IPS"),
-      Kind::UPS => write!(f, "UPS"),
-      Kind::BPS => write!(f, "BPS"),
-      Kind::PPF => write!(f, "PPF"),
-      Kind::VCD => write!(f, "Vcdiff (a.k.a. xdelta)"),
+      Kind::Ips => write!(f, "IPS"),
+      Kind::Ups => write!(f, "UPS"),
+      Kind::Bps => write!(f, "BPS"),
+      Kind::Ppf => write!(f, "PPF"),
+      Kind::Vcd => write!(f, "Vcdiff (a.k.a. xdelta)"),
     }
   }
 }
@@ -82,11 +82,11 @@ impl Patcher {
     O: BufWrite + AsRead + Seek,
   {
     match self.0 {
-      Kind::IPS => Patcher::ips(rom, patch, output),
-      Kind::UPS => Patcher::ups(rom, patch, output, strict),
-      Kind::BPS => Patcher::bps(rom, patch, output, strict),
-      Kind::PPF => Patcher::ppf(rom, patch, output, strict),
-      Kind::VCD => Patcher::vcdiff(rom, patch, output),
+      Kind::Ips => Patcher::ips(rom, patch, output),
+      Kind::Ups => Patcher::ups(rom, patch, output, strict),
+      Kind::Bps => Patcher::bps(rom, patch, output, strict),
+      Kind::Ppf => Patcher::ppf(rom, patch, output, strict),
+      Kind::Vcd => Patcher::vcdiff(rom, patch, output),
     }
   }
 
@@ -96,7 +96,7 @@ impl Patcher {
     P: BufRead,
     O: BufWrite,
   {
-    let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
+    let mut rom = MonotonicHashingReader::from_start(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
     ips::patch(&mut rom, &mut patch, &mut output)??;
@@ -157,10 +157,10 @@ impl Patcher {
     P: BufRead + Seek,
     O: BufWrite + AsRead,
   {
-    let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
+    let mut rom = MonotonicHashingReader::from_start(rom, CRC32Hasher::new());
     // Need to look ahead in the patch file for magic strings, so some bytes
     // will be read more than once.
-    let mut patch = MonotonicHashingReader::new(patch, CRC32Hasher::new());
+    let mut patch = MonotonicHashingReader::from_start(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
     ppf::patch(&mut rom, &mut patch, &mut output, strict)??;
     io::copy(&mut rom, &mut io::sink())?;
@@ -177,7 +177,7 @@ impl Patcher {
     P: BufRead + Seek,
     O: BufWrite + AsRead + Seek,
   {
-    let mut rom = MonotonicHashingReader::new(rom, CRC32Hasher::new());
+    let mut rom = MonotonicHashingReader::from_start(rom, CRC32Hasher::new());
     let mut patch = HashingReader::new(patch, CRC32Hasher::new());
     let mut output = HashingWriter::new(output, CRC32Hasher::new());
     vcd::patch(&mut rom, &mut patch, &mut output)??;

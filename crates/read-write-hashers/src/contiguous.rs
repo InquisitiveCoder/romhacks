@@ -1,4 +1,4 @@
-use crate::HashingWriter;
+use crate::{HashingWriter, WriteHasher};
 use read_write_utils::pos::PositionTracker;
 use read_write_utils::prelude::*;
 use std::hash::Hasher;
@@ -10,35 +10,34 @@ use std::io::SeekFrom;
 /// A [`Read`] adapter that hashes every byte up to its underlying reader's
 /// current position once and only once.
 ///
-/// Specifically, if the reader's cursor is moved forward, the bytes between
-/// the old and new positions will be hashed; if the cursor is moved backwards,
-/// calling `read` or `consume` won't hash any bytes that occur prior to the
-/// furthest hashed position.
+/// A `MonotonicHashingReader` remembers the furthest stream position that has
+/// been reached since it was created. Whenever the adapter's position advances,
+/// only the bytes that occur after that position will be hashed.  This behavior
+/// facilitates hashing a reader while processing its contents in a mostly
+/// sequential manner, without sacrificing the ability to seek back and forth.
 ///
-/// This allows a byte stream to be hashed while doing other tasks, even if they
-/// require occasional backward seeks. If the stream is only read strictly
-/// sequentially, a [`HashingReader`] will accomplish the same thing with less
-/// overhead.
+/// If the stream is read strictly sequentially, a [`HashingReader`][1] will
+/// accomplish the same thing with less overhead.
+///
+/// [1]: crate::HashingReader
 pub struct MonotonicHashingReader<R, H> {
   inner: PositionTracker<R>,
-  hasher: PositionTracker<HashingWriter<io::Sink, H>>,
+  hasher: PositionTracker<WriteHasher<H>>,
 }
 
-impl<R, H> MonotonicHashingReader<R, H>
-where
-  R: Read + Seek,
-  H: Hasher,
-{
-  pub fn new(inner: R, hasher: H) -> Self {
+impl<R: Read, H: Hasher> MonotonicHashingReader<R, H> {
+  /// Creates a new `MonotonicHashingReader`. The inner reader's cursor *must*
+  /// be at the start of the stream in order for the furthest hashed position
+  /// to be tracked accurately.
+  ///
+  /// [1]: Seek::stream_position
+  pub fn from_start(inner: R, hasher: H) -> Self {
     let inner = PositionTracker::from_start(inner);
-    let hasher = PositionTracker::from_start(HashingWriter::new(io::sink(), hasher));
+    let hasher = PositionTracker::from_start(WriteHasher::from(hasher));
     Self { inner, hasher }
   }
 
-  pub fn from_parts(
-    inner: PositionTracker<R>,
-    hasher: PositionTracker<HashingWriter<io::Sink, H>>,
-  ) -> Self {
+  pub fn from_parts(inner: PositionTracker<R>, hasher: PositionTracker<WriteHasher<H>>) -> Self {
     Self { inner, hasher }
   }
 }
@@ -50,10 +49,6 @@ impl<R, H> MonotonicHashingReader<R, H> {
 
   pub fn hasher(&self) -> &H {
     self.hasher.inner().hasher()
-  }
-
-  pub fn position(&self) -> u64 {
-    self.hasher.position()
   }
 
   pub fn into_parts(
@@ -68,7 +63,7 @@ impl<R, H> MonotonicHashingReader<R, H> {
 
 impl<R, H> Read for MonotonicHashingReader<R, H>
 where
-  R: BufRead + Seek,
+  R: Read + Seek,
   H: Hasher,
 {
   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -135,7 +130,7 @@ impl<R: BufRead + Seek, H: Hasher> Seek for MonotonicHashingReader<R, H> {
 
 impl<R, H> MonotonicHashingReader<R, H>
 where
-  R: BufRead + Seek,
+  R: Read + Seek,
   H: Hasher,
 {
   fn read_and_hash<'a, 'b>(
@@ -155,7 +150,7 @@ where
       .and_then(|hashed_len| data.split_at_checked(hashed_len))
       .map(|(_hashed, unhashed)| unhashed)
       .unwrap_or(&[]);
-    self.hasher.write(unhashed_data)?;
+    self.hasher.write_all(unhashed_data)?;
     Ok(data.len())
   }
 

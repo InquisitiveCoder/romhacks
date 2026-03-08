@@ -3,15 +3,49 @@ use crate::repeat::RepeatSlice;
 use checked_signed_diff::prelude::*;
 use std::io::ErrorKind::*;
 use std::io::*;
-use std::ops::{Deref, DerefMut};
+use std::ops::Deref;
 
-const ERR_MSG: &'static str = "PositionTracker position overflowed.";
+const ERR_MSG: &str = "PositionTracker position overflowed.";
 
 /// An I/O adapter which tracks the cursor position of its underlying stream.
 ///
-/// This facilitates various usage patterns such as [`Seek::seek_relative`],
-/// copying bytes until an absolute position is reached, and reading
-/// variable-length data.
+/// There are various use cases that require knowing a stream's cursor position.
+/// This is trivial, but tedious, to track manually. Since a variable  must be
+/// updated each time any I/O is done, this approach tends to clutter up the
+/// implementation of I/O-heavy code. Alternatively, if the stream implements
+/// [`Seek`], the position can be obtained by calling [`stream_position`][1],
+/// but this usually entails a system call.
+///
+/// `PositionTracker` addresses this problem by wrapping every I/O operation and
+/// automatically updating an internal position variable accordingly. This
+/// facilitates common tasks such as:
+/// * Calculating relative offsets for [`seek_relative`][2] to avoid prematurely
+///   discarding a reader's internal buffer. `PositionTracker` converts calls to
+///   [`seek`][2] into [`seek_relative`][3] whenever possible.
+/// * [Copying bytes until a specific position is reached][4].
+/// * Writing methods that decode variable-length data; there's no longer a need
+///   to clutter up the return value by including the number of bytes read.
+/// * Exiting a loop when the reader reaches a specific position.
+///
+/// # Copy Optimizations
+/// [`std::io::copy`] attempts to optimize cases where the reader or writer
+/// are `std::io` types. For instance, it can use the internal buffers of a
+/// [`BufReader`] or [`BufWriter`] instead of allocating an additional buffer
+/// and performing redundant copies. Additionally, it can delegate [`File`][5]-
+/// to-[`File`][5] copies to the Linux kernel, provided they're wrapped only in
+/// `std` adapters.
+///
+/// Passing a `PositionTracker` to `copy` can disable these optimizations. For
+/// this reason, `PositionTracker` provides methods that copy from or to the
+/// inner stream (e.g. [`copy_to`][6]). These methods should be preferred in
+/// generic code and when wrapping `std` types.
+///
+/// [1]: Seek::stream_position
+/// [2]: Seek::seek
+/// [3]: Seek::seek_relative
+/// [4]: PositionTracker::take_from_inner_until
+/// [5]: std::fs::File
+/// [6]: PositionTracker::copy_to
 pub struct PositionTracker<T> {
   inner: T,
   position: u64,
@@ -40,11 +74,12 @@ impl<T> PositionTracker<T> {
     Self { inner, position: 0 }
   }
 
-  /// Creates a `PositionTracker` initialized to the given pos position.
-  /// It's the caller's responsibility to ensure `position` matches `inner`'s
-  /// pos position.
+  /// Creates a `PositionTracker` initialized to the given position.
   ///
-  /// If the stream's position isn't known, use [`new`][1].
+  /// The provided position must match `inner`'s cursor position in order for
+  /// `PositionTracker` to behave correctly.
+  ///
+  /// If the stream's position isn't known, use [`with_unknown_position`][1].
   ///
   /// # Example
   /// This example demonstrates what happens if an incorrect position is
@@ -78,9 +113,6 @@ impl<T> PositionTracker<T> {
   /// [`PositionTracker::from_start`] is used to create a tracker, the inner
   /// stream _must_ be at position 0 when the tracker is created.
   ///
-  /// Performing I/O operations directly on the inner stream (e.g. via
-  /// [`BorrowInner::inner_mut`]) will also desynchronize the calculated position.
-  ///
   /// Finally, be aware that many [`Seek`] implementations allow seeking past
   /// EOF and return such positions from [`Seek::stream_position()`]. It's
   /// likewise not an error for this method to positions beyond EOF.
@@ -92,7 +124,7 @@ impl<T> PositionTracker<T> {
     self.position
   }
 
-  /// Gets a reference to the underlying reader.
+  /// Gets a reference to the underlying stream.
   pub fn inner(&self) -> &T {
     &self.inner
   }
@@ -121,11 +153,7 @@ impl<T> PositionTracker<T> {
 impl<R: Read> PositionTracker<R> {
   /// Calls [`copy`] with the inner reader and updates [`Self::position`].
   ///
-  /// This function has a few benefits over calling `copy` directly:
-  /// * It potentially enables `copy` to delegate file-to-file copies to the
-  /// Linux kernel, which it can't do if the reader is a `PositionTracker`.
-  /// * It allows the position to be updated only once.
-  /// * It provides a fluent interface, which some people may find preferable.
+  /// See [`PositionTracker`]
   pub fn copy_to(&mut self, writer: &mut impl Write) -> Result<u64> {
     let num_copied = copy(&mut self.inner, writer)?;
     self.increment_position(num_copied);
@@ -137,7 +165,7 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// This function has a few benefits over calling `copy` directly:
   /// * It potentially enables `copy` to delegate file-to-file copies to the
-  /// Linux kernel, which it can't do if the reader is a `PositionTracker`.
+  ///   Linux kernel, which it can't do if the reader is a `PositionTracker`.
   /// * It allows the position to be updated only once.
   /// * It provides a fluent interface, which some people may find preferable.
   pub fn copy_to_other(&mut self, writer: &mut PositionTracker<impl Write>) -> Result<u64> {
@@ -187,7 +215,7 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// [1]: copy
   /// [2]: Self::take_from_inner
-  /// [3]: Self::copy_to_inner_from
+  /// [3]: Self::copy_from
   pub fn copy_to_other_exactly(
     &mut self,
     amount: u64,
@@ -295,9 +323,9 @@ impl<S: Seek> Seek for PositionTracker<S> {
   /// This function will call [`seek_relative`][2] on the inner stream whenever
   /// possible to take advantage of its performance benefits. Specifically:
   /// * When seeking from the start of the stream, [`seek_relative`][2] will be
-  /// used if the offset from the current position fits in an `i64`.
+  ///   used if the offset from the current position fits in an `i64`.
   /// * If the pos is relative to the current position, [`seek_relative`][2]
-  /// is always used.
+  ///   is always used.
   ///
   /// [1]: Self::position
   /// [2]: Seek::seek_relative
@@ -337,14 +365,11 @@ impl<S: Seek> Seek for PositionTracker<S> {
 impl<W: Write> PositionTracker<W> {
   /// [Copies][1] from `reader` to this [`PositionTracker`]'s underlying writer.
   ///
-  /// This function has a few benefits over calling `copy` directly:
-  /// * It potentially enables `copy` to delegate file-to-file copies to the
-  /// Linux kernel, which it can't do if the writer is a `PositionTracker`.
-  /// * It allows the position to be updated only once.
-  /// * It provides a fluent interface, which some people may find preferable.
+  /// See [Copy Optimizations][2] for additional information.
   ///
   /// [1]: copy
-  pub fn copy_to_inner_from(&mut self, reader: &mut (impl Read + ?Sized)) -> Result<u64> {
+  /// [2]: PositionTracker#copy-optimizations
+  pub fn copy_from(&mut self, reader: &mut (impl Read + ?Sized)) -> Result<u64> {
     let amount_copied = copy(reader, &mut self.inner)?;
     self.increment_position(amount_copied);
     Ok(amount_copied)
@@ -420,49 +445,16 @@ impl<T> Deref for PositionTracker<T> {
 }
 
 pub trait PositionTrackerReadExt: Read {
-  /// Equivalent to [`PositionTracker::copy_to_inner_from`].
+  /// Equivalent to [`PositionTracker::copy_from`].
   ///
   /// The only advantage of this method is that the order the reader and writer
   /// is consistent with [`copy`].
   fn copy_to_inner_of(&mut self, writer: &mut PositionTracker<impl Write>) -> Result<u64> {
-    writer.copy_to_inner_from(self)
+    writer.copy_from(self)
   }
 }
 
 impl<R: Read> PositionTrackerReadExt for R {}
-
-#[derive(Debug)]
-pub struct WithSeek<T>(pub T);
-
-impl<T> Deref for WithSeek<T> {
-  type Target = T;
-
-  fn deref(&self) -> &Self::Target {
-    &self.0
-  }
-}
-
-impl<T> DerefMut for WithSeek<T> {
-  fn deref_mut(&mut self) -> &mut Self::Target {
-    &mut self.0
-  }
-}
-
-impl<R: Read> Read for WithSeek<R> {
-  fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
-    self.0.read(buf)
-  }
-}
-
-impl<B: BufRead> BufRead for WithSeek<B> {
-  fn fill_buf(&mut self) -> Result<&[u8]> {
-    self.0.fill_buf()
-  }
-
-  fn consume(&mut self, amt: usize) {
-    self.0.consume(amt)
-  }
-}
 
 impl Seek for PositionTracker<RepeatSlice<'_>> {
   fn seek(&mut self, pos: SeekFrom) -> Result<u64> {

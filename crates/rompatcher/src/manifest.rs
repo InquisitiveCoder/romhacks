@@ -61,7 +61,8 @@ fn monomorphic_get_or_create(
 
   kdl::Schema::parse(SCHEMA)
     .unwrap()
-    .check_text_matches(&manifest_path.to_string_lossy(), &str)?;
+    .check_text_matches(&manifest_path.to_string_lossy(), &str)
+    .map_err(Box::new)?;
 
   let manifest = mem::init(kdl::KdlDocument::from_str(&str).unwrap(), |doc| {
     doc.nodes_mut().sort_by(|a, b| {
@@ -105,7 +106,7 @@ fn validate_file(
   let patch_crc32 = Crc32Wrapper(patch_crc32);
   let patches: &[kdl::KdlNode] = kdl::unwrap_children(file_node);
   let patch_id = kdl::NodeId::new(PATCH, (CRC_32, patch_crc32));
-  if patches.iter().find(|patch| patch_id == **patch).is_some() {
+  if patches.iter().any(|patch| patch_id == *patch) {
     Err(GetOrCreateError::AlreadyPatched)?;
   }
   let last_patch: &kdl::KdlNode = patches.last().unwrap();
@@ -166,7 +167,7 @@ pub enum GetOrCreateError {
   IO(#[from] io::Error),
   #[error(transparent)]
   #[diagnostic(transparent)]
-  Kdl(#[from] kdl::CheckFailure),
+  Kdl(#[from] Box<kdl::CheckFailure>),
   #[error("According to the manifest file, this patch has already been applied.")]
   AlreadyPatched,
   #[error("The file doesn't match the last patch result in the manifest.")]
