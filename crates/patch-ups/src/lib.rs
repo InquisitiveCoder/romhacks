@@ -43,12 +43,12 @@ pub fn patch(
   )));
   let mut output = PositionTracker::from_start(HashingWriter::new(output, CRC32Hasher::new()));
 
-  if &(try2!(patch.read_array::<4>().map_patch_err::<PatchingError>()?)) != b"UPS1" {
+  if try2!(read_array_ne!(patch, b"UPS1").map_patch_err::<PatchingError>()?) {
     return Ok(Err(BadPatch));
   }
 
-  let expected_source_size: u64 = try2!(patch.read_number()?);
-  let expected_target_size: u64 = try2!(patch.read_number()?);
+  let expected_source_size: u64 = try2!(patch.read_varint()?);
+  let expected_target_size: u64 = try2!(patch.read_varint()?);
 
   let patch_result = apply_patch(
     &mut rom,
@@ -130,7 +130,7 @@ fn apply_patch(
   let mut output_buf: AVec<u8> = avec![];
   let mut is_subsequent_iteration = false;
   loop {
-    let relative_offset: u64 = try2!(patch.read_number()?);
+    let relative_offset: u64 = try2!(patch.read_varint()?);
     try2!(
       rom
         // As a minor optimization, apply_patch_block doesn't XOR the 0x00

@@ -1,6 +1,6 @@
 pub use super::pos::{PositionTracker, PositionTrackerReadExt};
-pub use crate::next_bytes_eq;
 use crate::DEFAULT_BUF_SIZE;
+pub use crate::{peek_eq, peek_ne, read_array_eq, read_array_ne};
 use polonius_the_crab::prelude::*;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -29,19 +29,19 @@ pub trait ReadExt: Read {
   /// The code below demonstrates the function's behavior when there isn't
   /// enough data in the reader to fill the buffer.
   /// ```
+  /// use std::io::Cursor;
   /// use std::io::prelude::*;
-  /// use std::io::{BufReader, Cursor};
   /// use read_write_utils::prelude::*;
   ///
   /// let mut vec_cursor = Cursor::new(vec![2u8, 3, 5, 7, 11]);
   /// let mut buffer = [13u8; 6];
   ///
-  /// let bytes_copied = vec_cursor.copy_to_slice(&mut buffer[..]);
+  /// let bytes_copied = vec_cursor.copy_to_slice(&mut buffer[..])?;
   ///
   /// // The return value is the number of bytes in the vector.
   /// assert_eq!(
-  ///    bytes_copied.unwrap() as usize,
-  ///    vec_cursor.get_ref().len()
+  ///    bytes_copied,
+  ///    vec_cursor.get_ref().len() as u64
   /// );
   ///
   /// // The first 5 indexes of the buffer have been overwritten,
@@ -49,9 +49,10 @@ pub trait ReadExt: Read {
   ///
   /// // The cursor is at the end of the vector.
   /// assert_eq!(
-  ///    vec_cursor.position() as usize,
-  ///    vec_cursor.get_ref().len()
+  ///    vec_cursor.position(),
+  ///    vec_cursor.get_ref().len() as u64
   /// );
+  /// # Ok::<(), std::io::Error>(())
   /// ```
   ///
   /// The code below demonstrates filling a buffer.
@@ -65,22 +66,17 @@ pub trait ReadExt: Read {
   /// let mut vec_cursor = Cursor::new(vec![2u8, 3, 5]);
   /// let mut buffer = [0u8; 2];
   ///
-  /// let bytes_copied = vec_cursor.copy_to_slice(&mut buffer[..]);
+  /// let bytes_copied = vec_cursor.copy_to_slice(&mut buffer[..])?;
   ///
   /// // The return value is the size of the buffer.
-  /// assert_eq!(
-  ///    bytes_copied.unwrap() as usize,
-  ///    buffer.len()
-  /// );
+  /// assert_eq!( bytes_copied, buffer.len() as u64);
   ///
   /// // The buffer matches the first two bytes of the vector.
   /// assert_eq!(&buffer[..], &(vec_cursor.get_ref())[..buffer.len()]);
   ///
   /// // The cursor position matches the length of the buffer.
-  /// assert_eq!(
-  ///    vec_cursor.position() as usize,
-  ///    buffer.len()
-  /// );
+  /// assert_eq!(vec_cursor.position(), buffer.len() as u64);
+  /// # Ok::<(), std::io::Error>(())
   /// ```
   ///
   /// [1]: Read::read
@@ -119,10 +115,11 @@ pub trait ReadExt: Read {
   ///
   /// let mut reader = Cursor::new(vec![1u8, 2, 3, 4, 5]);
   /// // Successful read.
-  /// assert_eq!(reader.read_array::<3>().unwrap(), [1u8, 2, 3]);
+  /// assert_eq!(reader.read_array::<3>()?, [1u8, 2, 3]);
   /// // Not enough bytes left.
   /// let err = reader.read_array::<3>();
   /// assert_eq!(err.err().unwrap().kind(), UnexpectedEof);
+  /// # Ok::<(), std::io::Error>(())
   /// ```
   ///
   /// [1]: ReadExt::copy_to_slice
@@ -189,7 +186,7 @@ pub trait BufReadExt: BufRead {
   /// For peeks much smaller than the size of the reader's internal buffer,
   /// there's a high probability that the copy and seek are avoided.
   ///
-  /// The [`next_bytes_eq!`] macro provides a convenient way to call `peek`
+  /// The [`peek_eq!`] macro provides a convenient way to call `peek`
   /// and compare the result to a `const` slice.
   ///
   /// # Errors
@@ -212,7 +209,7 @@ pub trait BufReadExt: BufRead {
   /// [1]: BufRead::fill_buf
   /// [2]: ReadExt::copy_to_slice
   /// [3]: Seek::seek_relative
-  /// [4]: next_bytes_eq
+  /// [4]: peek_eq
   fn peek<'a>(&'a mut self, buf: &'a mut [u8]) -> io::Result<&'a [u8]>
   where
     Self: Seek,

@@ -35,7 +35,7 @@ pub fn patch(
   let mut repeat = PositionTracker::from_start(RepeatSlice::new(&[0]));
   let mut sink = PositionTracker::from_start(io::sink());
 
-  if &(try2!(patch.read_array::<5>().map_patch_err()?)) != b"PATCH" {
+  if try2!(read_array_ne!(patch, b"PATCH").map_patch_err()?) {
     return Ok(Err(BadPatch));
   }
 

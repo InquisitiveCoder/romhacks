@@ -25,7 +25,7 @@ impl<R: BufRead> NearPatch<R> {
   /// # Errors
   /// If the value overflows, this function returns an
   /// [InvalidData](io::ErrorKind::InvalidData) error.
-  pub fn read_number(&mut self) -> io::Result<Result<u64, DecodingError>> {
+  pub fn read_varint(&mut self) -> io::Result<Result<u64, DecodingError>> {
     let mut data: u64 = 0;
     let mut shift = Checked::<u64>::new(1);
     loop {
@@ -97,7 +97,7 @@ mod tests {
   #[test]
   pub fn test_read_number() {
     let mut reader = NearPatch::new(Cursor::new(vec![0x0E, 0xB0, 0x80, 0x00u8]));
-    let offset: u64 = reader.read_number().unwrap().unwrap();
+    let offset: u64 = reader.read_varint().unwrap().unwrap();
     // Expected value obtained from the RomPatcher.js implementation.
     assert_eq!(offset, 6286);
     assert_eq!(reader.position(), 2);

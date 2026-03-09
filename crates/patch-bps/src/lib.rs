@@ -43,13 +43,13 @@ where
   )));
   let mut output = PositionTracker::from_start(HashingWriter::new(output_file, CRC32Hasher::new()));
 
-  if &(try2!(patch.read_array::<4>().map_patch_err::<PatchingError>()?)) != b"BPS1" {
+  if try2!(read_array_ne!(patch, b"BPS1").map_patch_err::<PatchingError>()?) {
     return Ok(Err(BadPatch));
   }
 
-  let expected_source_size: u64 = try2!(patch.read_number()?);
-  let expected_target_size: u64 = try2!(patch.read_number()?);
-  let metadata_size: u64 = try2!(patch.read_number()?);
+  let expected_source_size: u64 = try2!(patch.read_varint()?);
+  let expected_target_size: u64 = try2!(patch.read_varint()?);
+  let metadata_size: u64 = try2!(patch.read_varint()?);
   // Skip over the metadata, but still hash its contents.
   try2!(
     patch
@@ -243,7 +243,7 @@ mod patch {
 
     pub fn decode_command(&mut self) -> io::Result<Result<Command, DecodingError>> {
       use io::ErrorKind::InvalidData;
-      let encoded: u64 = try2!(self.read_number()?);
+      let encoded: u64 = try2!(self.read_varint()?);
       let length = NonZeroU64::new((encoded >> 2) + 1).ok_or(InvalidData)?;
       Ok(Ok(match encoded & 3 {
         0 => Command::SourceRead { length },
@@ -255,7 +255,7 @@ mod patch {
     }
 
     pub fn read_signed(&mut self) -> io::Result<Result<i64, DecodingError>> {
-      let data: u64 = try2!(self.read_number()?);
+      let data: u64 = try2!(self.read_varint()?);
       Ok(Ok(i64_from_sign_and_magnitude(data)))
     }
   }
