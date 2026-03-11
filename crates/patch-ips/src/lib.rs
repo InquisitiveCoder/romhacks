@@ -111,7 +111,7 @@ pub fn patch(
 
   match try2!(
     patch
-      .optionally(|patch| patch.read_array::<3>())
+      .optionally(|patch| patch.read_n::<3>())
       .map_patch_err()?
   )
   .map(|array| u64::from(BigEndian::read_u24(&array[..])))
@@ -130,7 +130,7 @@ pub fn patch(
       // The patch specifies a truncated size for the output file.
       // The new EOF should be further than the last change in the patch,
       // and the patch must now be at EOF.
-      if truncated_size < output.position() || !patch.has_reached_eof()? {
+      if truncated_size < output.position() || !patch.reached_eof()? {
         return Ok(Err(BadPatch));
       }
       try2!(

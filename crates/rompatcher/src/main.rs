@@ -36,7 +36,13 @@ enum Error {
   ApplyPatch(#[from] apply::Error),
   #[error(transparent)]
   #[diagnostic(transparent)]
-  Validation(#[from] Box<kdl_schema_check::CheckFailure>),
+  Validation(Box<kdl_schema_check::CheckFailure>),
+}
+
+impl From<kdl_schema_check::CheckFailure> for Error {
+  fn from(err: kdl_schema_check::CheckFailure) -> Error {
+    Error::Validation(Box::new(err))
+  }
 }
 
 impl process::Termination for Error {

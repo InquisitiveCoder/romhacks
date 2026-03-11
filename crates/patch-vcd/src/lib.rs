@@ -424,17 +424,6 @@ trait VcdiffRead: Read {
 }
 impl<R> VcdiffRead for R where R: Read {}
 
-trait ReadEof: BufRead {
-  /// Returns `true` if the reader has reached EOF.
-  ///
-  /// Calling this method will refill the internal buffer if it was empty.
-  fn reached_eof(&mut self) -> io::Result<bool> {
-    // `BufRead::fill_buf` returns an empty array iff EOF has been reached.
-    Ok(self.fill_buf()?.is_empty())
-  }
-}
-impl<R> ReadEof for R where R: BufRead {}
-
 struct AddressDecoder<R> {
   cache: AddressCache,
   addresses: R,

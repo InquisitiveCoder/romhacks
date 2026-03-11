@@ -16,7 +16,7 @@ use std::io::SeekFrom;
 pub use self::err::*;
 
 pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
-  let magic = file.read_array::<3>()?;
+  let magic = file.read_n::<3>()?;
   file.seek(SeekFrom::Start(0))?;
   let kind = match &magic[..] {
     ips::MAGIC => Kind::Ips,

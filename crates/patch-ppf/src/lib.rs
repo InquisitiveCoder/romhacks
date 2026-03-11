@@ -143,7 +143,7 @@ impl<T: BufRead + Seek> Patch<PositionTracker<&mut T>> {
     // String::from_utf8_lossy will cast the byte slice without having to copy
     // and modify the string, while str::trim_end will handle trailing spaces.
     // Nul bytes aren't displayed even if they're in the middle of a string.
-    let description: [u8; 50] = self.read_array()?;
+    let description: [u8; 50] = self.read_n()?;
     let description: Cow<str> = String::from_utf8_lossy(&description);
     let description: &str = description.trim_end();
     log::debug!("PPF patch description: {description}");
@@ -221,7 +221,7 @@ impl<T: BufRead + Seek> Patch<PositionTracker<&mut T>> {
     const END_MAGIC: &[u8] = b"@END_FILE_ID.DIZ";
     const MAX_BODY_LEN: u64 = 3072;
 
-    if self.has_reached_eof()? {
+    if self.reached_eof()? {
       // No footer.
       return Ok(Ok(true));
     }
@@ -261,7 +261,7 @@ impl<T: BufRead + Seek> Patch<PositionTracker<&mut T>> {
       return Ok(Err(BadPatch));
     }
 
-    if !self.has_reached_eof()? {
+    if !self.reached_eof()? {
       return Ok(Err(BadPatch));
     }
 
@@ -293,7 +293,7 @@ impl<T: BufRead> Patch<T> {
   }
 
   fn read_version_string(&mut self) -> io::Result<Result<Version, PatchingError>> {
-    let bytes = try2!(self.read_array::<5>().map_patch_err()?);
+    let bytes = try2!(self.read_n::<5>().map_patch_err()?);
     match bytes.as_slice() {
       b"PPF10" => Ok(Ok(Version::V1)),
       b"PPF20" => Ok(Ok(Version::V2)),

@@ -1,11 +1,11 @@
-/// Exports all traits as well as [`PositionTracker`][1].
-///
-/// [1]: prelude::PositionTracker
 pub mod prelude;
 
 pub mod pos;
 
+pub mod read;
 pub mod repeat;
+mod write;
+
 /// The buffer size constant used internally by `std::io` since Rust 1.9.0,
 /// copied verbatim.
 pub const DEFAULT_BUF_SIZE: usize = if cfg!(target_os = "espidf") { 512 } else { 8 * 1024 };
@@ -53,7 +53,7 @@ macro_rules! peek_ne {
   };
 }
 
-/// Calls [`read_array`][1] on a reader and compares its bytes to a `const`
+/// Calls [`read_n`][1] on a reader and compares its bytes to a `const`
 /// slice. The array size is obtained from the slice's length.
 ///
 /// # Examples
@@ -78,13 +78,13 @@ macro_rules! peek_ne {
 /// # Ok::<(), std::io::Error>(())
 /// ```
 ///
-/// [1]: prelude::ReadExt::read_array
+/// [1]: prelude::ReadExt::read_n
 #[macro_export]
 macro_rules! read_array_eq {
   ($reader:expr, $const_slice:expr) => {{
     use read_write_utils::prelude::*;
     $reader
-      .read_array::<{ $const_slice.len() }>()
+      .read_n::<{ $const_slice.len() }>()
       .map(|array| &array[..] == $const_slice)
   }};
 }

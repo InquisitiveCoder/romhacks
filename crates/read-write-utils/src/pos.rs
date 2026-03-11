@@ -1,4 +1,4 @@
-use crate::prelude::{AsRead, BufWrite, TakeExt};
+use crate::prelude::*;
 use crate::repeat::RepeatSlice;
 use checked_signed_diff::prelude::*;
 use std::io::ErrorKind::*;
@@ -456,7 +456,7 @@ pub trait PositionTrackerReadExt: Read {
 
 impl<R: Read> PositionTrackerReadExt for R {}
 
-impl Seek for PositionTracker<RepeatSlice<'_>> {
+impl<T> Seek for PositionTracker<RepeatSlice<T>> {
   fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
     match pos {
       SeekFrom::Start(pos) => self.position = pos,
