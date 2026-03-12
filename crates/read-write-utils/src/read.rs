@@ -2,24 +2,31 @@ use polonius_the_crab::prelude::*;
 use std::cmp::Ordering;
 use std::io;
 use std::io::prelude::*;
-use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
+use std::io::ErrorKind::{Interrupted, UnexpectedEof};
 
 pub trait ReadExt: Read {
-  /// Equivalent to `io::copy(self, writer)`. Useful if you need to call
-  /// [`io::copy`] at the end of a method chain.
+  /// Equivalent to `io::copy(self, writer)`. This can be useful if you need to
+  /// call [`io::copy`] at the end of a method chain.
   fn copy_to(&mut self, writer: &mut impl Write) -> io::Result<u64> {
     io::copy(self, writer)
   }
 
   /// Calls [`read`][1] until `slice` is full or EOF is reached.
   ///
-  /// This is equivalent to using [`take`][2] and [`io::copy`], except it won't
-  /// allocate an additional buffer and perform redundant copies. It also
-  /// differs from [`read_exact`][3] in that it won't return [`UnexpectedEof`].
+  /// This is equivalent to using [`take`][2] and [`io::copy`], but it won't
+  /// allocate a redundant buffer and copy the data twice, which is still the
+  /// case as of the time of this writing (Rust 1.94). Additionally, it's _much_
+  /// simpler syntactically. Compare to:
+  /// ```no_run
+  /// io::copy(&mut (&mut reader).take(buf.len() as u64), &mut buf)
+  /// ```
+  ///
+  /// If you want to ensure that the slice was filled, use [`read_exact`][3]
+  /// instead.
   ///
   /// # Errors
   /// Like [`io::copy`], if [`read`][1] fails due to an [`Interrupted`] error,
-  /// this function will retry the operation. If [`io::read`] returns any other
+  /// this function will retry the operation. If [`read`][1] returns any other
   /// error kind, this function returns it immediately.
   ///
   /// # Examples
@@ -72,17 +79,14 @@ pub trait ReadExt: Read {
   /// [1]: Read::read
   /// [2]: io::Take::take
   /// [3]: Read::read_exact
-  fn copy_to_slice(&mut self, mut slice: &mut [u8]) -> io::Result<u64> {
+  fn copy_to_slice(&mut self, mut buf: &mut [u8]) -> io::Result<u64> {
     let mut total: u64 = 0;
     loop {
-      match self.read(slice) {
+      match self.read(buf) {
         Ok(0) => return Ok(total),
         Ok(read_amount) => {
-          total = u64::try_from(read_amount)
-            .ok()
-            .and_then(|read_amount| u64::checked_add(total, read_amount))
-            .expect("copy_to_slice result overflowed");
-          slice = &mut slice[read_amount..];
+          total += read_amount as u64;
+          buf = &mut buf[read_amount..];
         }
         Err(e) if e.kind() == Interrupted => {}
         Err(e) => return Err(e),
@@ -90,15 +94,16 @@ pub trait ReadExt: Read {
     }
   }
 
-  /// Uses [`copy_to_slice`][1] to fill and return an array of length `N`.
+  /// Uses [`read_exact`][1] to fill and return an array of length `N`.
   ///
   /// This method provides a stable alternative to [`read_array`][2], which is
   /// still nightly-only as of Rust 1.94.0.
   ///
+  /// If you intend to compare the result of this method to a `const` slice or
+  /// slice literal, see the [`read_array_eq!`][3] macro.
+  ///
   /// # Errors
-  /// In addition to any errors returned by [`copy_to_slice`][1], this function
-  /// returns [`UnexpectedEof`] if there aren't enough bytes left in the reader
-  /// to fill the array.
+  /// This function returns any error from [`read_exact`][1].
   ///
   /// # Examples
   /// ```
@@ -118,15 +123,13 @@ pub trait ReadExt: Read {
   /// # Ok::<(), std::io::Error>(())
   /// ```
   ///
-  /// [1]: ReadExt::copy_to_slice
+  /// [1]: Read::read_exact
   /// [2]: Read::read_array
+  /// [3]: crate::read_array_eq!
   fn read_n<const N: usize>(&mut self) -> io::Result<[u8; N]> {
-    let limit = u64::try_from(N).map_err(|_| InvalidInput)?;
     let mut arr = [0u8; N];
-    self
-      .take(limit)
-      .exactly(|reader| reader.copy_to_slice(&mut arr[..]))
-      .map(|_| arr)
+    self.read_exact(&mut arr)?;
+    Ok(arr)
   }
 }
 impl<R: Read> ReadExt for R {}
@@ -184,12 +187,12 @@ pub trait BufReadExt: BufRead {
   /// For peeks much smaller than the size of the reader's internal buffer,
   /// there's a high probability that the copy and seek are avoided.
   ///
-  /// The [`peek_eq!`] macro provides a convenient way to call `peek`
-  /// and compare the result to a `const` slice.
+  /// The [`peek_eq!`][4] macro provides a convenient way to call `peek`
+  /// and compare the result to a `const` slice or slice literal.
   ///
   /// # Errors
-  /// This function returns [`InvalidInput`] if `amount` can't be converted to
-  /// an `i64`. Otherwise, see [`std::io::copy`] and [`seek_relative`][3].
+  /// This method can return any error from [`fill_buf`][1], [`io::copy`] and
+  /// [`seek_relative`][3].
   ///
   /// # Examples
   /// ```
@@ -207,12 +210,11 @@ pub trait BufReadExt: BufRead {
   /// [1]: BufRead::fill_buf
   /// [2]: ReadExt::copy_to_slice
   /// [3]: Seek::seek_relative
-  /// [4]: peek_eq
+  /// [4]: crate::peek_eq!
   fn peek<'a>(&'a mut self, buf: &'a mut [u8]) -> io::Result<&'a [u8]>
   where
     Self: Seek,
   {
-    i64::try_from(buf.len()).map_err(|_| InvalidInput)?;
     // the polonius macro seems to misbehave when its pseudo-parameter is self.
     let mut reader = self;
     polonius!(|reader| -> Result<&'polonius [u8], io::Error> {
@@ -222,7 +224,6 @@ pub trait BufReadExt: BufRead {
       }
     });
     let copy_amt = reader.copy_to_slice(buf)?;
-    // copy_amt <= buf.len() <= (i64::MAX and usize::MAX)
     reader.seek_relative(-(copy_amt as i64))?;
     Ok(&buf[0..copy_amt as usize])
   }
@@ -231,8 +232,8 @@ pub trait BufReadExt: BufRead {
   ///
   /// This method first compares the length of the slice returned by
   /// [`fill_buf`][2]; if it's greater than `amt`, that result is returned.
-  /// Otherwise, [up to][3] `amt + 1` bytes are [copied][4] to a [`Sink`],
-  /// followed by a backwards [`seek_relative`][5] to return `self` to its
+  /// Otherwise, [up to][3] `amt + 1` bytes are [copied][4] to a [sink][5],
+  /// followed by a backwards [`seek_relative`][6] to return `self` to its
   /// former position. The number of bytes copied is then compared to `amt`.
   ///
   /// If `amt` is much smaller than the size of the reader's internal buffer,
@@ -241,27 +242,23 @@ pub trait BufReadExt: BufRead {
   /// # Errors
   /// If `amt + 1` can't be converted to an `i64`, this method returns
   /// [`InvalidInput`]. Otherwise, see [`std::io::copy`] and
-  /// [`seek_relative`][5].
+  /// [`seek_relative`][6].
   ///
   /// [1]: Ord::cmp
   /// [2]: BufRead::fill_buf
-  /// [3]: Take::take
+  /// [3]: io::Take::take
   /// [4]: io::copy
-  /// [5]: Seek::seek_relative
+  /// [5]: io::sink
+  /// [6]: Seek::seek_relative
   fn peek_len(&mut self, amt: usize) -> io::Result<Ordering>
   where
     Self: Seek,
   {
     use Ordering::Greater;
-    let take_limit: i64 = i64::try_from(amt)
-      .ok()
-      .and_then(|x| i64::checked_add(x, 1))
-      .ok_or(InvalidInput)?;
     if let Greater = self.fill_buf()?.len().cmp(&amt) {
-      return Ok(std::cmp::Ordering::Greater);
+      return Ok(Greater);
     }
-    // copy_amt <= amt + 1 <= i64::MAX < u64::MAX
-    let copy_amt = io::copy(&mut self.take(take_limit as u64), &mut io::sink())?;
+    let copy_amt = self.take(amt as u64 + 1).copy_to(&mut io::sink())?;
     self.seek_relative(-(copy_amt as i64))?;
     Ok(copy_amt.cmp(&(amt as u64)))
   }
@@ -269,7 +266,11 @@ pub trait BufReadExt: BufRead {
 impl<R: BufRead> BufReadExt for R {}
 
 pub trait TakeExt {
-  /// Performs an I/O operation that reads exactly [`self.limit()`][1] bytes.
+  /// Executes an I/O operation and asserts that it read exactly
+  /// [`self.limit()`][1] bytes.
+  ///
+  /// In other words, this method allows the "exact" aspect of
+  /// [`read_exact`][2] to be applied to arbitrary I/O functions.
   ///
   /// # Errors
   /// If `f` fails, its error will be returned. If `f` succeeds but
@@ -283,29 +284,22 @@ pub trait TakeExt {
   /// use read_write_utils::prelude::*;
   ///
   /// # fn main() -> io::Result<()> {
-  /// let mut reader = io::Cursor::new(vec![0xFF, 0xFF, 0xFF]);
+  /// let mut file_a = io::Cursor::new([0xFF; 3]);
+  /// let mut file_b: Vec<u8> = vec![];
   ///
-  /// // A function that reads 2 bytes and returns a value.
-  /// fn read_u16(reader: &mut impl Read) -> io::Result<u16> {
-  ///   let mut buf = [0u8; 2];
-  ///   reader.read_exact(&mut buf)?;
-  ///   Ok(u16::from_be_bytes(buf))
-  /// }
-  ///
-  /// // The reader has 3 bytes, so the first read_u16 succeeds.
-  /// let result: u16 = (&mut reader).take(2).exactly(read_u16)?;
-  /// assert_eq!(result, u16::MAX);
-  /// assert_eq!(reader.position(), 2);
-  ///
-  /// // Error! Expected to read exactly 2 bytes, but there was only 1 left.
-  /// let result = (&mut reader).take(2).exactly(read_u16);
+  /// // This will fail since io::copy will reach EOF before it can copy 5 bytes.
+  /// // The type annotation for the closure parameter isn't necessary, and has
+  /// // been included for the sake of clarity.
+  /// let result = file_a.take(5).exactly(|file_a: &mut io::Take<_>| {
+  ///   io::copy(file_a, &mut file_b)
+  /// });
   /// assert!(result.is_err_and(|err| err.kind() == UnexpectedEof));
-  /// assert!(reader.reached_eof()?);
   /// # Ok(())
   /// # }
   /// ```
   ///
   /// [1]: io::Take::limit
+  /// [2]: Read::read_exact
   fn exactly<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<R>;
 }
 

@@ -13,6 +13,8 @@ pub const DEFAULT_BUF_SIZE: usize = if cfg!(target_os = "espidf") { 512 } else {
 /// Calls [`peek`][1] on a reader and compares the result to a `const` slice.
 /// The buffer argument for `peek` is an array of matching size.
 ///
+/// See also: [`peek_ne!`].
+///
 /// # Examples
 /// ```
 /// use std::io::Cursor;
@@ -55,6 +57,8 @@ macro_rules! peek_ne {
 
 /// Calls [`read_n`][1] on a reader and compares its bytes to a `const`
 /// slice. The array size is obtained from the slice's length.
+///
+/// See also: [`read_array_ne!`].
 ///
 /// # Examples
 /// ```
