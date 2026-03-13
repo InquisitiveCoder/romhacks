@@ -294,7 +294,7 @@ impl<T: BufRead> Patch<T> {
 
   fn read_version_string(&mut self) -> io::Result<Result<Version, PatchingError>> {
     let bytes = try2!(self.read_n::<5>().map_patch_err()?);
-    match bytes.as_slice() {
+    match &bytes[..] {
       b"PPF10" => Ok(Ok(Version::V1)),
       b"PPF20" => Ok(Ok(Version::V2)),
       b"PPF30" => Ok(Ok(Version::V3)),

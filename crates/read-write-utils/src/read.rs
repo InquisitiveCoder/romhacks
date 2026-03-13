@@ -2,7 +2,7 @@ use polonius_the_crab::prelude::*;
 use std::cmp::Ordering;
 use std::io;
 use std::io::prelude::*;
-use std::io::ErrorKind::{Interrupted, UnexpectedEof};
+use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
 
 pub trait ReadExt: Read {
   /// Equivalent to `io::copy(self, writer)`. This can be useful if you need to
@@ -11,32 +11,37 @@ pub trait ReadExt: Read {
     io::copy(self, writer)
   }
 
-  /// Calls [`read`][1] until `slice` is full or EOF is reached.
+  /// Calls [`read`][1] until `buf` is full or EOF is reached.
   ///
   /// This is equivalent to using [`take`][2] and [`io::copy`], but it won't
   /// allocate a redundant buffer and copy the data twice, which is still the
-  /// case as of the time of this writing (Rust 1.94). Additionally, it's _much_
-  /// simpler syntactically. Compare to:
-  /// ```no_run
-  /// io::copy(&mut (&mut reader).take(buf.len() as u64), &mut buf)
+  /// case as of Rust 1.94. It's also considerably shorter and simpler than
+  /// ```
+  /// # use std::io;
+  /// # use std::io::prelude::*;
+  /// # use read_write_utils::prelude::*;
+  /// #
+  /// # fn compare_copies(mut reader: impl Read, mut buf: &mut [u8]) -> () {
+  /// io::copy(&mut (&mut reader).take(buf.len() as u64), &mut buf);
+  /// # }
   /// ```
   ///
-  /// If you want to ensure that the slice was filled, use [`read_exact`][3]
+  /// If you need to ensure that the slice was filled, use [`read_exact`][3]
   /// instead.
   ///
   /// # Errors
-  /// Like [`io::copy`], if [`read`][1] fails due to an [`Interrupted`] error,
-  /// this function will retry the operation. If [`read`][1] returns any other
-  /// error kind, this function returns it immediately.
+  /// Like [`io::copy`], this method will retry any [`read`][1] that fails due
+  /// to an [`Interrupted`] error. Any other kind of error will be returned
+  /// immediately.
   ///
   /// # Examples
-  /// The code below demonstrates the function's behavior when there aren't
+  /// The code below demonstrates the method's behavior when there aren't
   /// enough bytes left in the reader to fill the buffer.
   /// ```
-  /// use std::io::Cursor;
-  /// use std::io::prelude::*;
-  /// use read_write_utils::prelude::*;
-  ///
+  /// # use std::io::Cursor;
+  /// # use std::io::prelude::*;
+  /// # use read_write_utils::prelude::*;
+  /// #
   /// let mut reader = Cursor::new(vec![1, 2, 3]);
   /// let mut buffer = [0u8; 5];
   ///
@@ -49,19 +54,17 @@ pub trait ReadExt: Read {
   ///
   /// // The first 3 indexes of the buffer have been overwritten.
   /// assert_eq!(&buffer[..], &[1, 2, 3, 0, 0]);
-  ///
   /// # Ok::<(), std::io::Error>(())
   /// ```
   ///
   /// The code below demonstrates filling a buffer.
   /// ```
-  /// use std::io::prelude::*;
-  /// use std::io::{BufReader, Cursor};
-  /// use read_write_utils::prelude::*;
-  ///
+  /// # use std::io::prelude::*;
+  /// # use std::io::{BufReader, Cursor};
+  /// # use read_write_utils::prelude::*;
+  /// #
   /// let mut reader = Cursor::new(vec![1, 2, 3u8]);
   /// let mut buffer = [0u8; 2];
-  ///
   /// // The number of bytes copied is the size of the buffer.
   /// assert_eq!(
   ///   reader.copy_to_slice(&mut buffer[..])?,
@@ -79,13 +82,13 @@ pub trait ReadExt: Read {
   /// [1]: Read::read
   /// [2]: io::Take::take
   /// [3]: Read::read_exact
-  fn copy_to_slice(&mut self, mut buf: &mut [u8]) -> io::Result<u64> {
-    let mut total: u64 = 0;
+  fn copy_to_slice(&mut self, mut buf: &mut [u8]) -> io::Result<usize> {
+    let mut total: usize = 0;
     loop {
       match self.read(buf) {
         Ok(0) => return Ok(total),
         Ok(read_amount) => {
-          total += read_amount as u64;
+          total += read_amount;
           buf = &mut buf[read_amount..];
         }
         Err(e) if e.kind() == Interrupted => {}
@@ -107,11 +110,11 @@ pub trait ReadExt: Read {
   ///
   /// # Examples
   /// ```
-  /// use std::io::Cursor;
-  /// use std::io::ErrorKind::UnexpectedEof;
-  /// use std::io::prelude::*;
-  /// use read_write_utils::prelude::*;
-  ///
+  /// # use std::io::Cursor;
+  /// # use std::io::ErrorKind::UnexpectedEof;
+  /// # use std::io::prelude::*;
+  /// # use read_write_utils::prelude::*;
+  /// #
   /// let mut reader = Cursor::new(vec![1u8, 2, 3, 4, 5]);
   ///
   /// // Successful read.
@@ -131,8 +134,14 @@ pub trait ReadExt: Read {
     self.read_exact(&mut arr)?;
     Ok(arr)
   }
+
+  #[doc(hidden)]
+  fn seal_trait(_: private::Internal);
 }
-impl<R: Read> ReadExt for R {}
+
+impl<R: Read> ReadExt for R {
+  fn seal_trait(_: private::Internal) {}
+}
 
 pub trait BufReadExt: BufRead {
   /// Checks if `self` has reached EOF.
@@ -144,12 +153,12 @@ pub trait BufReadExt: BufRead {
   ///
   /// # Examples
   /// ```
-  /// use std::io::prelude::*;
-  /// use std::io::Cursor;
-  /// use read_write_utils::prelude::*;
-  ///
+  /// # use std::io::prelude::*;
+  /// # use std::io::Cursor;
+  /// # use read_write_utils::prelude::*;
   /// let mut cursor = Cursor::new(vec![0u8; 3]);
   /// assert!(!cursor.reached_eof()?);
+  ///
   /// cursor.set_position(3);
   /// assert!(cursor.reached_eof()?);
   /// # Ok::<(), std::io::Error>(())
@@ -168,8 +177,33 @@ pub trait BufReadExt: BufRead {
   /// # Errors
   /// This function returns any errors from [`fill_buf`][1] or `f`.
   ///
+  /// # Examples
+  /// ```
+  /// # use std::io;
+  /// # use std::io::prelude::*;
+  /// # use read_write_utils::prelude::*;
+  /// #
+  /// fn read_u8(reader: &mut impl Read) -> io::Result<u8> {
+  ///   let mut buf = [0u8; 1];
+  ///   reader.read_exact(&mut buf[..])?;
+  ///   Ok(buf[0])
+  /// }
+  ///
+  /// let mut reader = io::Cursor::new([0xFF; 1]);
+  /// let result = reader.if_not_eof(read_u8);
+  /// // Read 1 byte, as expected.
+  /// assert!(result.is_ok_and(|option| option == Some(0xFF)));
+  ///
+  /// let mut empty = io::empty(); // always at EOF
+  /// let result = empty.if_not_eof(read_u8);
+  /// // No error; read_u8 wasn't called.
+  /// assert!(result.is_ok_and(|option| option == None));
+  ///
+  /// # Ok::<(), io::Error>(())
+  /// ```
+  ///
   /// [1]: BufRead::fill_buf
-  fn optionally<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<Option<R>> {
+  fn if_not_eof<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<Option<R>> {
     if self.reached_eof()? {
       return Ok(None);
     }
@@ -224,17 +258,18 @@ pub trait BufReadExt: BufRead {
       }
     });
     let copy_amt = reader.copy_to_slice(buf)?;
+    // The only way to overflow this cast is with a 9 exabyte slice.
     reader.seek_relative(-(copy_amt as i64))?;
-    Ok(&buf[0..copy_amt as usize])
+    Ok(&buf[0..copy_amt])
   }
 
   /// [Compares][1] the remaining number of bytes in the reader to `amt`.
   ///
   /// This method first compares the length of the slice returned by
   /// [`fill_buf`][2]; if it's greater than `amt`, that result is returned.
-  /// Otherwise, [up to][3] `amt + 1` bytes are [copied][4] to a [sink][5],
-  /// followed by a backwards [`seek_relative`][6] to return `self` to its
-  /// former position. The number of bytes copied is then compared to `amt`.
+  /// Otherwise, up to `amt + 1` bytes are read from `self`, followed by a
+  /// backwards [`seek_relative`][6] to return `self` to its former position.
+  /// The number of bytes read is then compared to `amt`.
   ///
   /// If `amt` is much smaller than the size of the reader's internal buffer,
   /// there's a high probability that the copy and seek are avoided.
@@ -254,16 +289,23 @@ pub trait BufReadExt: BufRead {
   where
     Self: Seek,
   {
+    i64::try_from(amt).map_err(|_| InvalidInput)?;
     use Ordering::Greater;
     if let Greater = self.fill_buf()?.len().cmp(&amt) {
       return Ok(Greater);
     }
+    // These casts and addition are all safe since 0 <= amt <= i64::MAX.
     let copy_amt = self.take(amt as u64 + 1).copy_to(&mut io::sink())?;
     self.seek_relative(-(copy_amt as i64))?;
     Ok(copy_amt.cmp(&(amt as u64)))
   }
+
+  #[doc(hidden)]
+  fn seal_trait(_: private::Internal);
 }
-impl<R: BufRead> BufReadExt for R {}
+impl<R: BufRead> BufReadExt for R {
+  fn seal_trait(_: private::Internal) {}
+}
 
 pub trait TakeExt {
   /// Executes an I/O operation and asserts that it read exactly
@@ -301,6 +343,9 @@ pub trait TakeExt {
   /// [1]: io::Take::limit
   /// [2]: Read::read_exact
   fn exactly<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<R>;
+
+  #[doc(hidden)]
+  fn seal_trait(_: private::Internal);
 }
 
 impl<I> TakeExt for io::Take<I> {
@@ -311,6 +356,12 @@ impl<I> TakeExt for io::Take<I> {
     }
     Ok(result)
   }
+
+  fn seal_trait(_: private::Internal) {}
+}
+
+mod private {
+  pub struct Internal;
 }
 
 #[cfg(test)]

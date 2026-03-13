@@ -244,7 +244,7 @@ where
       1..=18 => (Add { size: NonZeroU8::new(index - 1) }, Noop),
       19..=162 => {
         let offset = index - 19;
-        let size = NonZeroU8::new(if offset % 16 == 0 { 0 } else { 3 + offset });
+        let size = NonZeroU8::new(if offset.is_multiple_of(16) { 0 } else { 3 + offset });
         let mode = offset / 16;
         (Copy { size, mode }, Noop)
       }

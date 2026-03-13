@@ -1,6 +1,6 @@
 //! IPS format documentation: <https://zerosoft.zophar.net/ips.php>
 
-use byteorder::{BigEndian, ByteOrder, ReadBytesExt, BE};
+use byteorder::{ReadBytesExt, BE};
 use read_write_utils::prelude::*;
 use read_write_utils::repeat::RepeatSlice;
 use result_result_try::try2;
@@ -109,13 +109,10 @@ pub fn patch(
     rom.seek_relative(i64::from(hunk_size.get()))?;
   }
 
-  match try2!(
-    patch
-      .optionally(|patch| patch.read_n::<3>())
-      .map_patch_err()?
-  )
-  .map(|array| u64::from(BigEndian::read_u24(&array[..])))
-  {
+  let truncated_size = patch
+    .if_not_eof(|patch| Ok(u64::from(patch.read_u24::<BE>()?)))
+    .map_patch_err();
+  match try2!(truncated_size?) {
     None => {
       if output.position() == 0 {
         // If nothing was written to the output, the patch must be bad.
