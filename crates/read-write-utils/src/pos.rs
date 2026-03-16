@@ -1,8 +1,9 @@
 use crate::prelude::*;
 use crate::repeat::RepeatSlice;
 use checked_signed_diff::prelude::*;
+use std::io;
+use std::io::prelude::*;
 use std::io::ErrorKind::*;
-use std::io::*;
 use std::ops::Deref;
 
 const ERR_MSG: &str = "PositionTracker position overflowed.";
@@ -28,24 +29,26 @@ const ERR_MSG: &str = "PositionTracker position overflowed.";
 /// * Exiting a loop when the reader reaches a specific position.
 ///
 /// # Copy Optimizations
-/// [`std::io::copy`] attempts to optimize cases where the reader or writer
-/// are `std::io` types. For instance, it can use the internal buffers of a
-/// [`BufReader`] or [`BufWriter`] instead of allocating an additional buffer
-/// and performing redundant copies. Additionally, it can delegate [`File`][5]-
-/// to-[`File`][5] copies to the Linux kernel, provided they're wrapped only in
-/// `std` adapters.
+/// [`io::copy`] attempts to optimize cases where the reader or writer are
+/// `std` types. For instance, it can use the internal buffers of a
+/// [`BufReader`][5] or [`BufWriter`][6] instead of allocating an additional
+/// buffer and performing redundant copies. Additionally, it can delegate
+/// [`File`][7]-to-[`File`][7] copies to the Linux kernel, provided they're
+/// wrapped only in `std` adapters.
 ///
 /// Passing a `PositionTracker` to `copy` can disable these optimizations. For
 /// this reason, `PositionTracker` provides methods that copy from or to the
-/// inner stream (e.g. [`copy_to`][6]). These methods should be preferred in
+/// inner stream (e.g. [`copy_to`][8]). These methods should be preferred in
 /// generic code and when wrapping `std` types.
 ///
 /// [1]: Seek::stream_position
 /// [2]: Seek::seek
 /// [3]: Seek::seek_relative
 /// [4]: PositionTracker::take_from_inner_until
-/// [5]: std::fs::File
-/// [6]: PositionTracker::copy_to
+/// [5]: io::BufReader
+/// [6]: io::BufWriter
+/// [7]: std::fs::File
+/// [8]: PositionTracker::copy_to
 pub struct PositionTracker<T> {
   inner: T,
   position: u64,
@@ -59,17 +62,17 @@ impl<S: Seek> PositionTracker<S> {
   ///
   /// [1]: Seek::stream_position
   /// [2]: Self::from_start
-  /// [3]: Self::with_known_position
-  pub fn with_unknown_position(mut inner: S) -> Result<Self> {
+  /// [3]: Self::at_position
+  pub fn with_unknown_position(mut inner: S) -> io::Result<Self> {
     let position = inner.stream_position()?;
-    Ok(Self::with_known_position(position, inner))
+    Ok(Self::at_position(position, inner))
   }
 }
 
 impl<T> PositionTracker<T> {
   /// Equivalent to [`PositionTracker::with_known_position(0, inner)`][1].
   ///
-  /// [1]: Self::with_known_position
+  /// [1]: Self::at_position
   pub fn from_start(inner: T) -> Self {
     Self { inner, position: 0 }
   }
@@ -82,15 +85,15 @@ impl<T> PositionTracker<T> {
   /// If the stream's position isn't known, use [`with_unknown_position`][1].
   ///
   /// # Example
-  /// This example demonstrates what happens if an incorrect position is
+  /// This example demonstrates what happens if an **incorrect** position is
   /// provided.
   /// ```
-  /// use std::io::prelude::*;
-  /// use std::io::Cursor;
-  /// use read_write_utils::pos::PositionTracker;
-  ///
+  /// # use std::io::prelude::*;
+  /// # use std::io::Cursor;
+  /// # use read_write_utils::pos::PositionTracker;
+  /// #
   /// let mut inner = Cursor::new(vec![0u8, 1, 2, 3]);
-  /// let mut tracker = PositionTracker::with_known_position(1, inner);
+  /// let mut tracker = PositionTracker::at_position(1, inner);
   /// assert_eq!(tracker.position(), 1);
   /// let mut buf: [u8; 1] = [0];
   /// tracker.read(&mut buf[..]);
@@ -102,7 +105,7 @@ impl<T> PositionTracker<T> {
   /// ```
   ///
   /// [1]: Self::with_unknown_position
-  pub fn with_known_position(position: u64, inner: T) -> Self {
+  pub fn at_position(position: u64, inner: T) -> Self {
     Self { inner, position }
   }
 
@@ -151,16 +154,19 @@ impl<T> PositionTracker<T> {
 }
 
 impl<R: Read> PositionTracker<R> {
-  /// Calls [`copy`] with the inner reader and updates [`Self::position`].
+  /// Calls [`io::copy`] with the inner reader and updates [`position`][1].
   ///
-  /// See [`PositionTracker`]
-  pub fn copy_to(&mut self, writer: &mut impl Write) -> Result<u64> {
-    let num_copied = copy(&mut self.inner, writer)?;
+  /// See [`Copy Optimizations`](PositionTracker#copy-optimizations) for more
+  /// details.
+  ///
+  /// [1]: Self::position
+  pub fn copy_to(&mut self, writer: &mut impl Write) -> io::Result<u64> {
+    let num_copied = io::copy(&mut self.inner, writer)?;
     self.increment_position(num_copied);
     Ok(num_copied)
   }
 
-  /// Calls [`copy`] with the inner reader and writer of both parameters and
+  /// Calls [`io::copy`] with the inner reader and writer of both parameters and
   /// updates the [positions](Self::position`) of both.
   ///
   /// This function has a few benefits over calling `copy` directly:
@@ -168,7 +174,7 @@ impl<R: Read> PositionTracker<R> {
   ///   Linux kernel, which it can't do if the reader is a `PositionTracker`.
   /// * It allows the position to be updated only once.
   /// * It provides a fluent interface, which some people may find preferable.
-  pub fn copy_to_other(&mut self, writer: &mut PositionTracker<impl Write>) -> Result<u64> {
+  pub fn copy_to_other(&mut self, writer: &mut PositionTracker<impl Write>) -> io::Result<u64> {
     let num_copied = self.copy_to(&mut writer.inner)?;
     writer.increment_position(num_copied);
     Ok(num_copied)
@@ -178,29 +184,31 @@ impl<R: Read> PositionTracker<R> {
   /// [`PositionTracker`] to `writer`.
   ///
   /// Equivalent to using [`self.take_from_inner`][2], [`TakeExt::exactly`] and
-  /// [`copy`].
+  /// [`io::copy`].
   ///
-  /// [1]: copy
+  /// [1]: io::copy
   /// [2]: Self::take_from_inner
-  pub fn copy_exactly(&mut self, amount: u64, writer: &mut impl Write) -> Result<u64> {
-    self.take_from_inner(amount, |take| take.exactly(|reader| copy(reader, writer)))
+  pub fn copy_exactly(&mut self, amount: u64, writer: &mut impl Write) -> io::Result<u64> {
+    self.take_from_inner(amount, |take| {
+      take.exactly(|reader| io::copy(reader, writer))
+    })
   }
 
   /// [`Copies`][1] bytes from the inner reader of this [`PositionTracker`] to
   /// `writer` until the reader reaches `SeekFrom::Start(pos)`.
   ///
   /// Equivalent to using [`self.take_from_inner_until`][2],
-  /// [`TakeExt::exactly`] and [`copy`].
+  /// [`TakeExt::exactly`] and [`io::copy`].
   ///
   /// # Errors
   /// * [`take_from_inner_until`][2] can return [`InvalidData`].
   /// * [`TakeExt::exactly`] can return [`UnexpectedEof`].
-  /// * Any error returned by [`copy`].
+  /// * Any error returned by [`io::copy`].
   ///
-  /// [1]: copy
+  /// [1]: io::copy
   /// [2]: Self::take_from_inner_until
-  pub fn copy_until(&mut self, pos: u64, writer: &mut impl Write) -> Result<u64> {
-    self.take_from_inner_until(pos, |take| take.exactly(|reader| copy(reader, writer)))
+  pub fn copy_until(&mut self, pos: u64, writer: &mut impl Write) -> io::Result<u64> {
+    self.take_from_inner_until(pos, |take| take.exactly(|reader| io::copy(reader, writer)))
   }
 
   /// [`Copies`][1] exactly `amount` bytes from the inner reader and writer of
@@ -211,16 +219,16 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// # Errors
   /// * [`TakeExt::exactly`] can return [`UnexpectedEof`].
-  /// * Any error returned by [`copy`].
+  /// * Any error returned by [`io::copy`].
   ///
-  /// [1]: copy
+  /// [1]: io::copy
   /// [2]: Self::take_from_inner
   /// [3]: Self::copy_from
   pub fn copy_to_other_exactly(
     &mut self,
     amount: u64,
     writer: &mut PositionTracker<impl Write>,
-  ) -> Result<u64> {
+  ) -> io::Result<u64> {
     self.take_from_inner(amount, |take| {
       take.exactly(|reader| reader.copy_to_inner_of(writer))
     })
@@ -232,14 +240,14 @@ impl<R: Read> PositionTracker<R> {
   /// Equivalent to using [`self.take_from_inner_until`][2],
   /// [`TakeExt::exactly`] and [`reader.copy_to_inner_of(writer)`][3].
   ///
-  /// [1]: copy
+  /// [1]: io::copy
   /// [2]: Self::take_from_inner
   /// [3]: PositionTrackerReadExt::copy_to_inner_of
   pub fn copy_to_other_until(
     &mut self,
     offset: u64,
     writer: &mut PositionTracker<impl Write>,
-  ) -> Result<u64> {
+  ) -> io::Result<u64> {
     self.take_from_inner_until(offset, |take| {
       take.exactly(|reader| reader.copy_to_inner_of(writer))
     })
@@ -249,8 +257,8 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// Generic code should prefer using this function over `self.take()`, since
   /// passing a `Take<PositionTracker<_>>` (or any other non-`std` reader or
-  /// writer) to [`copy`] will prevent it from offloading file-to-file copies
-  /// to the Linux kernel.
+  /// writer) to [`io::copy`] will prevent it from offloading file-to-file
+  /// copies to the Linux kernel.
   ///
   /// # Examples
   /// ```
@@ -268,9 +276,9 @@ impl<R: Read> PositionTracker<R> {
   /// assert_eq!(bytes_read.unwrap(), 1);
   /// assert_eq!(reader.position(), 5);
   /// ```
-  pub fn take_from_inner<T, F>(&mut self, amt: u64, f: F) -> Result<T>
+  pub fn take_from_inner<T, F>(&mut self, amt: u64, f: F) -> io::Result<T>
   where
-    F: FnOnce(&mut Take<&mut R>) -> Result<T>,
+    F: FnOnce(&mut io::Take<&mut R>) -> io::Result<T>,
   {
     let mut inner = (&mut self.inner).take(amt);
     let result = f(&mut inner);
@@ -305,13 +313,13 @@ impl<R: Read> PositionTracker<R> {
   /// let error = reader.take_from_inner_until(0, |take| Ok(()));
   /// assert!(error.is_err_and(|err| err.kind() == io::ErrorKind::InvalidInput));
   /// ```
-  pub fn take_from_inner_until<T, F>(&mut self, pos: u64, f: F) -> Result<T>
+  pub fn take_from_inner_until<T, F>(&mut self, pos: u64, f: F) -> io::Result<T>
   where
-    F: FnOnce(&mut Take<&mut R>) -> Result<T>,
+    F: FnOnce(&mut io::Take<&mut R>) -> io::Result<T>,
   {
     match pos.checked_sub(self.position) {
       Some(amt) => self.take_from_inner(amt, f),
-      None => Err(Error::from(InvalidInput)),
+      None => Err(io::Error::from(InvalidInput)),
     }
   }
 }
@@ -329,8 +337,8 @@ impl<S: Seek> Seek for PositionTracker<S> {
   ///
   /// [1]: Self::position
   /// [2]: Seek::seek_relative
-  fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
-    use SeekFrom::*;
+  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+    use io::SeekFrom::*;
     let relative_offset = match pos {
       Start(position) => position.checked_signed_difference(self.position),
       Current(offset) => Some(offset),
@@ -346,7 +354,7 @@ impl<S: Seek> Seek for PositionTracker<S> {
   }
 
   /// Returns [`Ok(self.position())`](PositionTracker::position).
-  fn stream_position(&mut self) -> Result<u64> {
+  fn stream_position(&mut self) -> io::Result<u64> {
     Ok(self.position())
   }
 
@@ -355,7 +363,7 @@ impl<S: Seek> Seek for PositionTracker<S> {
   ///
   /// [1]: Seek::seek_relative
   /// [2]: Self::position
-  fn seek_relative(&mut self, offset: i64) -> Result<()> {
+  fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
     self.inner.seek_relative(offset)?;
     self.increment_position_signed(offset);
     Ok(())
@@ -367,10 +375,10 @@ impl<W: Write> PositionTracker<W> {
   ///
   /// See [Copy Optimizations][2] for additional information.
   ///
-  /// [1]: copy
+  /// [1]: io::copy
   /// [2]: PositionTracker#copy-optimizations
-  pub fn copy_from(&mut self, reader: &mut (impl Read + ?Sized)) -> Result<u64> {
-    let amount_copied = copy(reader, &mut self.inner)?;
+  pub fn copy_from(&mut self, reader: &mut (impl Read + ?Sized)) -> io::Result<u64> {
+    let amount_copied = io::copy(reader, &mut self.inner)?;
     self.increment_position(amount_copied);
     Ok(amount_copied)
   }
@@ -384,13 +392,14 @@ impl<I: AsRead> PositionTracker<I> {
   /// to match the `PositionTracker` of the inner stream.
   ///
   /// A noteworthy use case this function facilitates is reading from a file
-  /// wrapped by a [`BufWriter`].
-  pub fn read_from_inner<F, R>(&mut self, f: F) -> Result<R>
+  /// wrapped by a [`BufWriter`][1].
+  ///
+  /// [1]: io::BufWriter
+  pub fn read_from_inner<F, R>(&mut self, f: F) -> io::Result<R>
   where
-    F: FnOnce(&mut PositionTracker<&mut dyn Read>) -> Result<R>,
+    F: FnOnce(&mut PositionTracker<&mut dyn Read>) -> io::Result<R>,
   {
-    let mut inner_tracker =
-      PositionTracker::with_known_position(self.position, self.inner.as_read()?);
+    let mut inner_tracker = PositionTracker::at_position(self.position, self.inner.as_read()?);
     let result = f(&mut inner_tracker)?;
     self.position = inner_tracker.position();
     Ok(result)
@@ -398,7 +407,7 @@ impl<I: AsRead> PositionTracker<I> {
 }
 
 impl<R: Read> Read for PositionTracker<R> {
-  fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+  fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
     let amount: usize = self.inner.read(buf)?;
     self.increment_position(amount);
     Ok(amount)
@@ -407,7 +416,7 @@ impl<R: Read> Read for PositionTracker<R> {
 
 impl<R: BufRead> BufRead for PositionTracker<R> {
   /// Calls [`fill_buf`](BufRead::fill_buf) on the inner reader.
-  fn fill_buf(&mut self) -> Result<&[u8]> {
+  fn fill_buf(&mut self) -> io::Result<&[u8]> {
     self.inner.fill_buf()
   }
 
@@ -423,13 +432,13 @@ impl<R: BufRead> BufRead for PositionTracker<R> {
 }
 
 impl<W: Write> Write for PositionTracker<W> {
-  fn write(&mut self, buf: &[u8]) -> Result<usize> {
+  fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
     let amount = self.inner.write(buf)?;
     self.increment_position(amount);
     Ok(amount)
   }
 
-  fn flush(&mut self) -> Result<()> {
+  fn flush(&mut self) -> io::Result<()> {
     self.inner.flush()
   }
 }
@@ -448,8 +457,8 @@ pub trait PositionTrackerReadExt: Read {
   /// Equivalent to [`PositionTracker::copy_from`].
   ///
   /// The only advantage of this method is that the order the reader and writer
-  /// is consistent with [`copy`].
-  fn copy_to_inner_of(&mut self, writer: &mut PositionTracker<impl Write>) -> Result<u64> {
+  /// is consistent with [`io::copy`].
+  fn copy_to_inner_of(&mut self, writer: &mut PositionTracker<impl Write>) -> io::Result<u64> {
     writer.copy_from(self)
   }
 }
@@ -457,11 +466,11 @@ pub trait PositionTrackerReadExt: Read {
 impl<R: Read> PositionTrackerReadExt for R {}
 
 impl<T> Seek for PositionTracker<RepeatSlice<T>> {
-  fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+  fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
     match pos {
-      SeekFrom::Start(pos) => self.position = pos,
-      SeekFrom::Current(offset) => self.increment_position(offset),
-      SeekFrom::End(_) => self.position = u64::MAX,
+      io::SeekFrom::Start(pos) => self.position = pos,
+      io::SeekFrom::Current(offset) => self.increment_position(offset),
+      io::SeekFrom::End(_) => self.position = u64::MAX,
     }
     Ok(self.position)
   }

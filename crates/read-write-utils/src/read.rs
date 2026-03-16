@@ -15,7 +15,7 @@ pub trait ReadExt: Read {
   ///
   /// This is equivalent to using [`take`][2] and [`io::copy`], but it won't
   /// allocate a redundant buffer and copy the data twice, which is still the
-  /// case as of Rust 1.94. It's also considerably shorter and simpler than
+  /// case as of Rust 1.94. It's also considerably shorter and simpler than:
   /// ```
   /// # use std::io;
   /// # use std::io::prelude::*;
@@ -88,7 +88,8 @@ pub trait ReadExt: Read {
       match self.read(buf) {
         Ok(0) => return Ok(total),
         Ok(read_amount) => {
-          total += read_amount;
+          total = usize::checked_add(total, read_amount)
+            .expect("number of bytes copied to a slice shouldn't overflow usize");
           buf = &mut buf[read_amount..];
         }
         Err(e) if e.kind() == Interrupted => {}
@@ -169,7 +170,8 @@ pub trait BufReadExt: BufRead {
     Ok(self.fill_buf()?.is_empty())
   }
 
-  /// Performs an I/O operation if and only if `self` hasn't reached EOF.
+  /// Performs an I/O operation if and only if `self` hasn't reached EOF. This
+  /// is useful for handling optional data at the end of a reader.
   ///
   /// If `self` is at EOF, returns `Ok(None)`;
   /// otherwise, returns `Ok(Some(f(self)?))`.
@@ -211,12 +213,12 @@ pub trait BufReadExt: BufRead {
   }
 
   /// Peeks at the next `buf.len()` bytes in the reader. The returned slice's
-  /// length can be smaller if EOF is reached.
+  /// length can be smaller than `buf` if EOF is reached.
   ///
-  /// This method first attempts to return `buf.len()` bytes from `self`'s
-  /// [internal buffer][1]. Otherwise, [`self.copy_to_slice(buf)`][2] will be
-  /// called, followed by a backwards [`seek_relative`][3] to return `self` to
-  /// its former position.
+  /// This method first attempts to return `buf.len()` bytes from
+  /// [`self.fill_buf()`][1]. Otherwise, [`self.copy_to_slice(buf)`][2] will
+  /// be called, followed by a backwards [`seek_relative`][3] to return `self`
+  /// to its former position.
   ///
   /// For peeks much smaller than the size of the reader's internal buffer,
   /// there's a high probability that the copy and seek are avoided.
@@ -230,15 +232,17 @@ pub trait BufReadExt: BufRead {
   ///
   /// # Examples
   /// ```
-  /// use std::io::{Cursor, SeekFrom};
-  /// use std::io::prelude::*;
-  /// use read_write_utils::prelude::*;
-  ///
+  /// # use std::io;
+  /// # use std::io::{Cursor, SeekFrom};
+  /// # use std::io::prelude::*;
+  /// # use read_write_utils::prelude::*;
+  /// #
   /// let mut reader = Cursor::new([0u8, 1, 2, 3, 4, 5, 6, 7]);
   /// let mut buf = [0u8; 3];
-  /// assert_eq!(reader.peek(&mut buf[..]).unwrap(), &[0u8, 1, 2]);
+  /// assert_eq!(reader.peek(&mut buf[..])?, &[0, 1, 2]);
   /// reader.set_position(6);
-  /// assert_eq!(reader.peek(&mut buf[..]).unwrap(), &[6u8, 7]);
+  /// assert_eq!(reader.peek(&mut buf[..])?, &[6, 7]);
+  /// # Ok::<(), io::Error>(())
   /// ```
   ///
   /// [1]: BufRead::fill_buf
@@ -294,7 +298,7 @@ pub trait BufReadExt: BufRead {
     if let Greater = self.fill_buf()?.len().cmp(&amt) {
       return Ok(Greater);
     }
-    // These casts and addition are all safe since 0 <= amt <= i64::MAX.
+    // All casts and arithmetic below this line are safe since amt <= i64::MAX.
     let copy_amt = self.take(amt as u64 + 1).copy_to(&mut io::sink())?;
     self.seek_relative(-(copy_amt as i64))?;
     Ok(copy_amt.cmp(&(amt as u64)))
@@ -371,31 +375,14 @@ mod test {
 
   #[test]
   fn copy_to_slice_multiple_reads() -> io::Result<()> {
-    let mut cursor = BufReader::with_capacity(2, io::Cursor::new(vec![1u8, 2, 3, 4, 5]));
+    // Use a BufReader with limited capacity to force the read loop to iterate
+    // more than once.
+    let reader = io::Cursor::new(vec![1u8, 2, 3, 4, 5]);
+    let mut reader = BufReader::with_capacity(2, reader);
     let mut buf = [0u8; 5];
-    let bytes_copied = cursor.copy_to_slice(&mut buf)?;
-    assert_eq!(bytes_copied as usize, buf.len());
-    assert_eq!(cursor.get_ref().get_ref().as_slice(), &buf[..]);
-    Ok(())
-  }
-
-  #[test]
-  fn peek_full_read() -> io::Result<()> {
-    let mut reader = io::Cursor::new([0u8, 1, 2, 3, 4]);
-    let mut buf = [0u8; 3];
-    reader.set_position(1);
-    assert_eq!(reader.peek(&mut buf)?, &[1, 2, 3]);
-    assert_eq!(reader.position(), 1);
-    Ok(())
-  }
-
-  #[test]
-  fn peek_eof() -> io::Result<()> {
-    let mut reader = io::Cursor::new([0u8, 1, 2, 3, 4]);
-    let mut buf = [0u8; 3];
-    reader.set_position(3);
-    assert_eq!(reader.peek(&mut buf[..])?, &[3, 4]);
-    assert_eq!(reader.position(), 3);
+    let bytes_copied = reader.copy_to_slice(&mut buf)?;
+    assert_eq!(bytes_copied, buf.len());
+    assert_eq!(reader.get_ref().get_ref().as_slice(), &buf[..]);
     Ok(())
   }
 }

@@ -58,13 +58,13 @@ pub fn patch(
       rom = {
         let pos = rom.position();
         let inner = repeat.into_inner();
-        repeat = PositionTracker::with_known_position(pos, inner);
-        PositionTracker::with_known_position(pos, &mut repeat)
+        repeat = PositionTracker::at_position(pos, inner);
+        PositionTracker::at_position(pos, &mut repeat)
       };
       output = {
         let pos = output.position();
         let inner = sink.into_inner();
-        sink = PositionTracker::with_known_position(pos, inner);
+        sink = PositionTracker::at_position(pos, inner);
         PositionTracker::from_start(&mut sink)
       };
       // Finish the copy so that rom and output reach the same position as if

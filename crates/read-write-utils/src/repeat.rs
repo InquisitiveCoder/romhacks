@@ -2,15 +2,15 @@ use std::io;
 use std::io::prelude::*;
 
 /// A [reader] that yields the bytes in a slice infinitely, just as
-/// [`Repeat`][1] does for a single byte.
+/// [`io::repeat`] does for a single byte.
 ///
-/// If the slice is 1 byte long, all reads delegate to [`std::io::repeat`].
+/// If the slice is 1 byte long, all reads delegate to [`io::repeat`].
 ///
 ///  # Examples
 /// ```
-/// use std::io::prelude::*;
-/// use read_write_utils::repeat::RepeatSlice;
-///
+/// # use std::io::prelude::*;
+/// # use read_write_utils::repeat::RepeatSlice;
+/// #
 /// let mut repeat = RepeatSlice::new(&[1, 2, 3]);
 /// let buf = &mut [0u8; 2][..];
 /// let _ = repeat.read_exact(buf);
@@ -22,7 +22,6 @@ use std::io::prelude::*;
 /// ```
 ///
 /// [reader]: Read
-/// [1]: io::Repeat
 pub struct RepeatSlice<T> {
   cursor: io::Cursor<T>,
 }

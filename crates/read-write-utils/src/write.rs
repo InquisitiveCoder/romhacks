@@ -19,7 +19,12 @@ pub trait WriteExt: Write {
 /// Writers that have an internal buffer or don't perform I/O.
 ///
 /// This trait indicates that a writer is suitable for small and repeated
-/// writes, as explained in the documentation for [`BufWriter`](io::BufWriter).
+/// writes, as explained in the documentation for [`BufWriter`][1]. By adding
+/// this bound to generic code, you don't have to defensively wrap writers in a
+/// possibly redundant [`BufWriter`][1], nor force a specific buffer size on
+/// consumers of your code.
+///
+/// [1]: io::BufWriter
 pub trait BufWrite: Write {}
 
 /// [`BufWrite`] implementations that support reading from their underlying

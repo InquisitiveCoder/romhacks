@@ -1,3 +1,44 @@
+//! # Read/Write Utils
+//!
+//! This crate fills gaps in `std::io`, with a focus on avoiding unnecessary
+//! system calls and taking full advantage of buffered I/O.
+//!
+//! The cornerstone of this crate is the [`PositionTracker`][1] adapter, which
+//! tracks a reader or writer's stream position as you perform I/O operations.
+//! Among other things, this makes it much easier to use [`seek_relative`][2]
+//! to avoid pre-maturely discarding a [`BufReader`][3]'s internal buffer.
+//!
+//! Other common tasks that this crate addresses:
+//! * [`exactly`][4] asserts that the expected number of bytes were read.
+//! * [`peek`][5] and [`peek_len`][6] provide efficient ways to look ahead into
+//!   any buffered reader.
+//! * [`read_n`][7] is useful for one-off reads.
+//! * [`copy_to_slice`][8] fills up a slice as much as possible
+//! * [`reached_eof`][9] expresses intent more clearly than
+//!   `fill_buf()?.is_empty()`.
+//! * [`if_not_eof`][10] provides a way to handle optional data at the end of a
+//!   reader.
+//! * The [`BufWrite`][11] trait can be used to ensure consumers of your code
+//!   provide a writer that's suitable for small, frequent writes.
+//! * [`RepeatSlice`][12] provides a more general version of [`io::repeat`][13].
+//!
+//! Simply `use read_write_utils::prelude::*` to import all traits, macros, and
+//! [`PositionTracker`][1].
+//!
+//! [1]: prelude::PositionTracker
+//! [2]: ::std::io::Seek::seek_relative
+//! [3]: ::std::io::BufReader
+//! [4]: prelude::TakeExt::exactly
+//! [5]: prelude::BufReadExt::peek
+//! [6]: prelude::BufReadExt::peek_len
+//! [7]: prelude::ReadExt::read_n
+//! [8]: prelude::ReadExt::copy_to_slice
+//! [9]: prelude::BufReadExt::reached_eof
+//! [10]: prelude::BufReadExt::if_not_eof
+//! [11]: prelude::BufWrite
+//! [12]: repeat::RepeatSlice
+//! [13]: ::std::io::repeat
+
 pub mod prelude;
 
 pub mod pos;
