@@ -136,7 +136,7 @@ fn apply_patch(
         // As a minor optimization, apply_patch_block doesn't XOR the 0x00
         // delimiter with the corresponding ROM byte. Therefore, one extra byte
         // needs to be copied on subsequent iterations.
-        .copy_to_other_exactly(u64::from(is_subsequent_iteration) + relative_offset, output,)
+        .copy_to_inner_exactly(u64::from(is_subsequent_iteration) + relative_offset, output,)
         .map_rom_err::<E>()?
     );
     try2!(apply_patch_block(
@@ -154,7 +154,7 @@ fn apply_patch(
 
   try2!(
     rom
-      .copy_to_other_until(expected_target_size, output)
+      .copy_to_inner_until(expected_target_size, output)
       .map_rom_err::<E>()?
   );
 

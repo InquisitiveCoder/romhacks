@@ -86,8 +86,10 @@ where
 impl<W: BufWrite, H: Hasher> BufWrite for HashingWriter<W, H> {}
 
 impl<I: AsRead, H: Hasher> AsRead for HashingWriter<I, H> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
-    self.inner.as_read()
+  type Reader = I::Reader;
+
+  fn as_reader(&mut self) -> io::Result<&mut I::Reader> {
+    self.inner.as_reader()
   }
 }
 

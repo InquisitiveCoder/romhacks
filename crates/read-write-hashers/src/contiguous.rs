@@ -63,7 +63,7 @@ impl<R, H> MonotonicHashingReader<R, H> {
 
 impl<R, H> Read for MonotonicHashingReader<R, H>
 where
-  R: Read + Seek,
+  R: Read,
   H: Hasher,
 {
   fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
@@ -72,6 +72,13 @@ where
       Ok(&buf[..amt])
     })
   }
+}
+
+impl<R, H> AmortizedRead for MonotonicHashingReader<R, H>
+where
+  R: Read,
+  H: Hasher,
+{
 }
 
 impl<R, H> BufRead for MonotonicHashingReader<R, H>
@@ -95,50 +102,46 @@ impl<R: BufRead + Seek, H: Hasher> Seek for MonotonicHashingReader<R, H> {
   fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
     match pos {
       SeekFrom::Start(position) => {
-        self.seek_and_hash_to(position)?;
+        self.seek_and_hash_to(position, Seek::seek)?;
       }
       SeekFrom::Current(offset) => {
         self.seek_relative(offset)?;
       }
       SeekFrom::End(offset) => {
-        // Hash as many bytes as possible before discarding the buffer.
-        // The buffer might include the end of the stream, so don't read past
-        // buf.len() + offset.
+        // It's not possible to determine the seek position up front in this
+        // case, but the relative offset to the destination can't be smaller
+        // than fill_buf().len() + offset. Therefore, it's still possible to
+        // hash some of the buffered data before it's discarded by the seek.
         let buf = self.inner.fill_buf()?;
-        if let Some(safe_read_len) = (buf.len() as u64)
-          .checked_add_signed(offset)
-          .map(|x| std::cmp::min(x, buf.len() as u64))
-          .and_then(|x| usize::try_from(x).ok())
-        {
-          debug_assert!(safe_read_len <= buf.len());
-          let _ = self.hasher.write_all(&buf[..safe_read_len]);
-          self.inner.consume(safe_read_len);
-        }
+        let safe_read_len = u64::checked_add_signed(buf.len() as u64, offset)
+          .map(|x| usize::try_from(x).ok().unwrap_or(usize::MAX))
+          .map(|x| usize::min(x, buf.len()))
+          // In the case of overflow, clamp the length to 0 or buf.len().
+          .unwrap_or_else(|| usize::from(offset.is_positive()) * buf.len());
+        debug_assert!(safe_read_len <= buf.len());
+        let _ = self.hasher.write_all(&buf[..safe_read_len]);
+        self.inner.consume(safe_read_len);
         let position = self.inner.seek(pos)?;
-        self.seek_and_hash_to(position)?;
+        self.seek_and_hash_to(position, Seek::seek)?;
       }
     }
     Ok(self.inner.position())
   }
 
   fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
-    let position = self.inner.position();
-    let new_position = position.checked_add_signed(offset).ok_or(InvalidInput)?;
-    self.seek_and_hash_to(new_position)
+    self.seek_relative_and_hash_to(offset, Seek::seek_relative)
   }
 }
 
 impl<R, H> MonotonicHashingReader<R, H>
 where
-  R: Read + Seek,
+  R: Read,
   H: Hasher,
 {
-  fn read_and_hash<'a, 'b>(
-    &'a mut self,
-    read_or_consume: impl FnOnce(&'a mut PositionTracker<R>) -> io::Result<&'b [u8]>,
-  ) -> io::Result<usize>
+  fn read_and_hash<'a, 'b, F>(&'a mut self, read_or_consume: F) -> io::Result<usize>
   where
     'a: 'b,
+    F: FnOnce(&'a mut PositionTracker<R>) -> io::Result<&'b [u8]>,
   {
     let starting_position = self.inner.position();
     let data: &[u8] = read_or_consume(&mut self.inner)?;
@@ -153,22 +156,48 @@ where
     self.hasher.write_all(unhashed_data)?;
     Ok(data.len())
   }
+}
 
-  fn seek_and_hash_to(&mut self, position: u64) -> io::Result<()> {
-    let hasher_position = self.hasher.position();
-    if position <= hasher_position {
-      // Seeking to a position that's already been hashed, nothing to do but
-      // pos the inner stream.
-      self.inner.seek(SeekFrom::Start(position))?;
-    } else {
-      // Seeking to unhashed data.
-      // Seek to the furthest hashed position, then read and hash until the
-      // new position is reached.
-      self.inner.seek(SeekFrom::Start(hasher_position))?;
-      self
-        .inner
-        .take_from_inner_until(position, |inner| inner.copy_to_inner_of(&mut self.hasher))?;
-    }
+impl<R, H> MonotonicHashingReader<R, H>
+where
+  R: Read,
+  H: Hasher,
+{
+  fn seek_and_hash_to<F>(&mut self, position: u64, seek: F) -> io::Result<()>
+  where
+    F: FnOnce(&mut PositionTracker<R>, SeekFrom) -> io::Result<u64>,
+  {
+    seek(
+      &mut self.inner,
+      SeekFrom::Start(u64::min(position, self.hasher.position())),
+    )?;
+    self.inner.copy_to_inner_until(position, &mut self.hasher)?;
     Ok(())
+  }
+
+  fn seek_relative_and_hash_to<F>(&mut self, offset: i64, seek_relative: F) -> io::Result<()>
+  where
+    F: FnOnce(&mut PositionTracker<R>, i64) -> io::Result<()>,
+  {
+    let new_position =
+      u64::checked_add_signed(self.inner.position(), offset).ok_or(InvalidInput)?;
+    let hasher_offset: i64 =
+      u64::checked_signed_diff(self.hasher.position(), self.inner.position())
+        .ok_or(InvalidInput)?;
+    seek_relative(&mut self.inner, i64::min(offset, hasher_offset))?;
+    self
+      .inner
+      .copy_to_inner_until(new_position, &mut self.hasher)?;
+    Ok(())
+  }
+}
+
+impl<S, H> SeekRelative for MonotonicHashingReader<S, H>
+where
+  S: Read + SeekRelative,
+  H: Hasher,
+{
+  fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
+    self.seek_relative_and_hash_to(offset, SeekRelative::seek_relative)
   }
 }

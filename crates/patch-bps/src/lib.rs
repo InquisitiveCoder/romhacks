@@ -150,14 +150,14 @@ where
         rom.seek(SeekFrom::Start(output.position()))?;
         try2!(
           rom
-            .copy_to_other_exactly(length.get(), output)
+            .copy_to_inner_exactly(length.get(), output)
             .map_rom_err::<PErr>()?
         );
       }
       Command::TargetRead { length } => {
         try2!(
           patch
-            .copy_to_other_exactly(length.get(), output)
+            .copy_to_inner_exactly(length.get(), output)
             .map_patch_err::<PErr>()?
         );
       }
@@ -173,7 +173,7 @@ where
         rom.seek(SeekFrom::Start(source_relative_offset))?;
         try2!(
           rom
-            .copy_to_other_exactly(length.get(), output)
+            .copy_to_inner_exactly(length.get(), output)
             .map_rom_err::<PErr>()?
         );
         source_relative_offset = try2!(
@@ -200,7 +200,7 @@ where
         // BufWriters don't support reading, so use the inner writer instead.
         try2!(
           output
-            .read_from_inner(|output: &mut PositionTracker<&mut dyn Read>| {
+            .read_from_inner(|output: &mut PositionTracker<_>| {
               target_copy_buffer
                 .reserve(usize::try_from(sequence_period_len.get()).unwrap_or(usize::MAX));
               output.copy_exactly(sequence_period_len.get(), &mut target_copy_buffer)
@@ -211,7 +211,7 @@ where
 
         RepeatSlice::new(&target_copy_buffer[..])
           .take(length.get())
-          .copy_to_inner_of(output)?;
+          .copy_to_inner(output)?;
         target_copy_buffer.clear();
         target_relative_offset = try2!(
           target_relative_offset

@@ -3,11 +3,15 @@ use std::cmp::Ordering;
 use std::io;
 use std::io::prelude::*;
 use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
+use std::io::{BufReader, StdinLock};
 
 pub trait ReadExt: Read {
   /// Equivalent to `io::copy(self, writer)`. This can be useful if you need to
   /// call [`io::copy`] at the end of a method chain.
-  fn copy_to(&mut self, writer: &mut impl Write) -> io::Result<u64> {
+  fn copy_to<W>(&mut self, writer: &mut W) -> io::Result<u64>
+  where
+    W: Write + ?Sized,
+  {
     io::copy(self, writer)
   }
 
@@ -364,6 +368,24 @@ impl<I> TakeExt for io::Take<I> {
   fn seal_trait(_: private::Internal) {}
 }
 
+/// Readers that support small, frequent reads like [`BufRead`] but don't
+/// necessarily support buffer operations (e.g. [io::Repeat]).
+///
+/// You should prefer using [`AmortizedRead`] as a trait bound if you don't
+/// need access to [`BufRead::fill_buf`].
+pub trait AmortizedRead: Read {}
+impl AmortizedRead for &[u8] {}
+impl AmortizedRead for io::Empty {}
+impl AmortizedRead for StdinLock<'_> {}
+impl<R: AmortizedRead + ?Sized> AmortizedRead for &mut R {}
+impl<R: AmortizedRead + ?Sized> AmortizedRead for Box<R> {}
+impl<R> AmortizedRead for BufReader<R> where BufReader<R>: BufRead {}
+impl<T> AmortizedRead for io::Cursor<T> where io::Cursor<T>: BufRead {}
+impl<R> AmortizedRead for io::Take<R> where io::Take<R>: BufRead {}
+impl<T, U> AmortizedRead for io::Chain<T, U> where io::Chain<T, U>: BufRead {}
+impl AmortizedRead for io::Repeat {}
+impl<T> AmortizedRead for crate::repeat::RepeatSlice<T> where crate::repeat::RepeatSlice<T>: Read {}
+
 mod private {
   pub struct Internal;
 }
@@ -386,3 +408,7 @@ mod test {
     Ok(())
   }
 }
+
+trait BufRead2: BufRead + AmortizedRead {}
+
+impl<T> BufRead2 for T where T: BufRead + AmortizedRead {}

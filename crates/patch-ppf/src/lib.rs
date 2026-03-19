@@ -65,11 +65,9 @@ pub fn patch(
           // region, whichever comes first.
           try2!(
             rom
-              .take_from_inner_until(cmp::min(offset, region.end), |take| {
-                take.exactly(|rom| {
-                  let mut hashing_reader = HashingReader::new(rom, &mut hasher);
-                  io::copy(&mut hashing_reader, output)
-                })
+              .take_until(cmp::min(offset, region.end), |rom| {
+                let mut hashing_reader = HashingReader::new(rom, &mut hasher);
+                hashing_reader.copy_to(output)
               })
               .map_rom_err()?
           );

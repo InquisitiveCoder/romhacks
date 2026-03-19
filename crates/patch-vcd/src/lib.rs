@@ -3,6 +3,7 @@ use cache::AddressCache;
 use io::SeekFrom;
 use num_traits::{CheckedMul, Num};
 use read_write_utils::prelude::*;
+use read_write_utils::repeat::RepeatSlice;
 use result_result_try::try2;
 use rompatcher_err::*;
 use std::io;
@@ -103,8 +104,7 @@ where
         rom.seek(SeekFrom::Start(source_position))?;
         try2!(
           rom
-            .take(u64::from(source_len))
-            .exactly(|rom| io::copy(rom, &mut buffers.superstring))
+            .copy_exactly(u64::from(source_len), &mut buffers.superstring)
             .map_rom_err()?
         );
         source_len
@@ -115,10 +115,10 @@ where
         output.seek(SeekFrom::Start(source_position))?;
         try2!(
           output
-            .read_from_inner(|output: &mut PositionTracker<&mut dyn Read>| {
-              output
-                .take(u64::from(source_len))
-                .exactly(|output| output.copy_to_slice(&mut buffers.superstring))
+            .read_from_inner(|output_reader: &mut PositionTracker<_>| {
+              output_reader.take_exactly(u64::from(source_len), |output| {
+                output.copy_to_slice(&mut buffers.superstring)
+              })
             })
             .map_patch_err()?
         );
@@ -129,45 +129,43 @@ where
       _ => return Ok(Err(BadPatch)),
     };
 
-    let encoding_len: u32 = patch.read_integer()?;
-    let mut patch = patch.take(u64::from(encoding_len));
+    let encoding_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+    try2!(patch.take_exactly(u64::from(encoding_len), |patch| {
+      let target_window_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+      buffers
+        .superstring
+        .resize(buffers.superstring.len() + target_window_len as usize, 0);
 
-    let target_window_len: u32 = try2!(patch.read_integer().map_patch_err()?);
-    buffers
-      .superstring
-      .resize(buffers.superstring.len() + target_window_len as usize, 0);
+      let delta_indicator: u8 = try2!(patch.read_u8().map_patch_err()?);
+      if delta_indicator != 0 {
+        // A valid patch can't reach this condition.
+        // The flags in this byte indicate which of the buffers are compressed and
+        // should only be set if the VC_DECOMPRESS bit was set. If VC_DECOMPRESS
+        // was set, applying the patch will return UnsupportedPatchFeature while
+        // processing the header.
+        return Ok(Err(BadPatch));
+      }
 
-    let delta_indicator: u8 = try2!(patch.read_u8().map_patch_err()?);
-    if delta_indicator != 0 {
-      // A valid patch can't reach this condition.
-      // The flags in this byte indicate which of the buffers are compressed and
-      // should only be set if the VC_DECOMPRESS bit was set. If VC_DECOMPRESS
-      // was set, applying the patch will return UnsupportedPatchFeature while
-      // processing the header.
-      return Ok(Err(BadPatch));
-    }
-
-    let data_len: u32 = try2!(patch.read_integer().map_patch_err()?);
-    let instructions_len: u32 = try2!(patch.read_integer().map_patch_err()?);
-    let addresses_len: u32 = try2!(patch.read_integer().map_patch_err()?);
-    try2!(
-      (&mut patch)
-        .take(u64::from(data_len))
-        .exactly(|patch| io::copy(patch, &mut buffers.add_and_run_data))
-        .map_patch_err()?
-    );
-    try2!(
-      (&mut patch)
-        .take(u64::from(instructions_len))
-        .exactly(|patch| io::copy(patch, &mut buffers.instructions_and_sizes))
-        .map_patch_err()?
-    );
-    try2!(
-      (&mut patch)
+      let data_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+      let instructions_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+      let addresses_len: u32 = try2!(patch.read_integer().map_patch_err()?);
+      try2!(
+        patch
+          .take(u64::from(data_len))
+          .exactly(|patch| patch.copy_to(&mut buffers.add_and_run_data))
+          .map_patch_err()?
+      );
+      try2!(
+        patch
+          .take(u64::from(instructions_len))
+          .exactly(|patch| patch.copy_to(&mut buffers.instructions_and_sizes))
+          .map_patch_err()?
+      );
+      patch
         .take(u64::from(addresses_len))
-        .exactly(|patch| io::copy(patch, &mut buffers.copy_addresses))
-        .map_patch_err()?
-    );
+        .exactly(|patch| patch.copy_to(&mut buffers.copy_addresses))
+        .map_patch_err()
+    })?);
 
     let mut cursors = Cursors::new(buffers, source_window_len);
     loop {
@@ -199,18 +197,18 @@ where
             .map_patch_err()?
         );
         try2!(
-          (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
-            io::copy(&mut io::repeat(byte).take(u64::from(size)), &mut dest)
+          (cursors.superstring).write_bytes(size, |_, dest: &mut [u8]| {
+            io::repeat(byte).copy_to_slice(dest)
           })?
         );
       }
       Instruction::Add { size } => {
         let size: u32 = cursors.read_instruction_size(size)?;
         try2!(
-          (cursors.superstring).write_bytes(size, |_, mut dest: &mut [u8]| {
+          (cursors.superstring).write_bytes(size, |_, dest: &mut [u8]| {
             (&mut cursors.add_and_run_data)
               .take(u64::from(size))
-              .exactly(|data| io::copy(data, &mut dest))
+              .exactly(|data| data.copy_to_slice(dest))
           })?
         );
       }
@@ -219,12 +217,12 @@ where
         let here: u32 = cursors.superstring.target_window_position();
         let address = try2!(cursors.copy_addresses.decode(here, mode).map_patch_err()?);
         try2!(
-          (cursors.superstring).write_bytes(size, |source: &[u8], mut dest: &mut [u8]| {
+          (cursors.superstring).write_bytes(size, |source: &[u8], dest: &mut [u8]| {
             let sequence_len = u32::min(address + size, source.len() as u32);
             let periodic_sequence: &[u8] = &source[address as usize..sequence_len as usize];
-            (&mut read_write_utils::repeat::RepeatSlice::new(periodic_sequence))
+            RepeatSlice::new(periodic_sequence)
               .take(u64::from(sequence_len))
-              .exactly(|data| io::copy(data, &mut dest))?;
+              .exactly(|data| data.copy_to_slice(dest))?;
             Ok(())
           })?
         );
@@ -283,7 +281,7 @@ struct Files<R, P, O> {
 }
 
 // The Vcdiff standard doesn't specify maximum bounds for these buffers so it's
-// not  possible to allocate them statically.
+// not possible to allocate them statically.
 struct Buffers {
   pub superstring: Vec<u8>,
   pub add_and_run_data: Vec<u8>,

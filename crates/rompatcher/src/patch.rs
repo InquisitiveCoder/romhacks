@@ -77,7 +77,7 @@ impl Patcher {
     strict: bool,
   ) -> Result<Checksums, Error>
   where
-    R: BufRead + Seek,
+    R: AmortizedRead + BufRead + SeekRelative + Seek,
     P: BufRead + Seek,
     O: BufWrite + AsRead + Seek,
   {
@@ -92,7 +92,7 @@ impl Patcher {
 
   fn ips<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<Checksums, Error>
   where
-    R: BufRead + Seek,
+    R: AmortizedRead + SeekRelative,
     P: BufRead,
     O: BufWrite,
   {

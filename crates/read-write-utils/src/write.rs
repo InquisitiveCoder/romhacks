@@ -30,6 +30,8 @@ pub trait BufWrite: Write {}
 /// [`BufWrite`] implementations that support reading from their underlying
 /// stream.
 pub trait AsRead: BufWrite {
+  type Reader: Read + ?Sized;
+
   /// Returns a mutable reference to the underlying writer.
   ///
   /// This method is intended for cases where the inner writer has capabilities
@@ -38,14 +40,16 @@ pub trait AsRead: BufWrite {
   /// written in an unintended order.
   ///
   /// [1]: Write::flush
-  fn as_read(&mut self) -> io::Result<&mut dyn Read>;
+  fn as_reader(&mut self) -> io::Result<&mut Self::Reader>;
 }
 
 impl BufWrite for &mut [u8] {}
 
 impl BufWrite for io::Cursor<&mut [u8]> {}
 impl AsRead for io::Cursor<&mut [u8]> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = Self;
+
+  fn as_reader(&mut self) -> io::Result<&mut Self> {
     self.flush()?;
     Ok(self)
   }
@@ -58,7 +62,9 @@ impl BufWrite for io::StdoutLock<'_> {}
 
 impl BufWrite for io::Cursor<&mut Vec<u8>> {}
 impl AsRead for io::Cursor<&mut Vec<u8>> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = Self;
+
+  fn as_reader(&mut self) -> io::Result<&mut Self> {
     self.flush()?;
     Ok(self)
   }
@@ -66,7 +72,9 @@ impl AsRead for io::Cursor<&mut Vec<u8>> {
 
 impl BufWrite for io::Cursor<Box<[u8]>> {}
 impl AsRead for io::Cursor<Box<[u8]>> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = Self;
+
+  fn as_reader(&mut self) -> io::Result<&mut Self> {
     self.flush()?;
     Ok(self)
   }
@@ -74,7 +82,9 @@ impl AsRead for io::Cursor<Box<[u8]>> {
 
 impl BufWrite for io::Cursor<Vec<u8>> {}
 impl AsRead for io::Cursor<Vec<u8>> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = Self;
+
+  fn as_reader(&mut self) -> io::Result<&mut Self> {
     self.flush()?;
     Ok(self)
   }
@@ -82,7 +92,9 @@ impl AsRead for io::Cursor<Vec<u8>> {
 
 impl BufWrite for VecDeque<u8> {}
 impl AsRead for VecDeque<u8> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = Self;
+
+  fn as_reader(&mut self) -> io::Result<&mut Self> {
     self.flush()?;
     Ok(self)
   }
@@ -93,7 +105,9 @@ impl BufWrite for Vec<u8> {}
 impl<W: Write> BufWrite for io::BufWriter<W> {}
 
 impl<I: Read + Write> AsRead for io::BufWriter<I> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = I;
+
+  fn as_reader(&mut self) -> io::Result<&mut I> {
     self.flush()?;
     Ok(self.get_mut())
   }
@@ -101,7 +115,9 @@ impl<I: Read + Write> AsRead for io::BufWriter<I> {
 
 impl<const N: usize> BufWrite for io::Cursor<[u8; N]> {}
 impl<const N: usize> AsRead for io::Cursor<[u8; N]> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = Self;
+
+  fn as_reader(&mut self) -> io::Result<&mut Self> {
     self.flush()?;
     Ok(self)
   }
@@ -109,16 +125,20 @@ impl<const N: usize> AsRead for io::Cursor<[u8; N]> {
 
 impl<W: BufWrite> BufWrite for Box<W> {}
 impl<W: AsRead> AsRead for Box<W> {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+  type Reader = W::Reader;
+
+  fn as_reader(&mut self) -> io::Result<&mut W::Reader> {
     self.flush()?;
-    self.as_mut().as_read()
+    self.as_mut().as_reader()
   }
 }
 
-impl<W: BufWrite> BufWrite for &mut W {}
-impl<W: AsRead> AsRead for &mut W {
-  fn as_read(&mut self) -> io::Result<&mut dyn Read> {
+impl<W: BufWrite + ?Sized> BufWrite for &mut W {}
+impl<W: AsRead + ?Sized> AsRead for &mut W {
+  type Reader = W::Reader;
+
+  fn as_reader(&mut self) -> io::Result<&mut W::Reader> {
     self.flush()?;
-    <W as AsRead>::as_read(self)
+    <W as AsRead>::as_reader(self)
   }
 }

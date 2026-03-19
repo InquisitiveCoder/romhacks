@@ -45,7 +45,8 @@ pub mod pos;
 
 pub mod read;
 pub mod repeat;
-mod write;
+pub mod seek;
+pub mod write;
 
 /// The buffer size constant used internally by `std::io` since Rust 1.9.0,
 /// copied verbatim.

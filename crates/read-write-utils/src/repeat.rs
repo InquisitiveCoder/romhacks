@@ -1,3 +1,5 @@
+use crate::prelude::SeekRelative;
+use io::ErrorKind::InvalidInput;
 use std::io;
 use std::io::prelude::*;
 
@@ -41,10 +43,22 @@ impl<T: AsRef<[u8]>> RepeatSlice<T> {
     self.cursor.get_ref().as_ref()
   }
 
-  fn wrap_position(&mut self) {
+  fn wrap_cursor_position(&mut self) {
     self
       .cursor
-      .set_position(self.cursor.position() % self.slice().len() as u64);
+      .set_position(self.wrap_value(self.cursor.position()));
+  }
+
+  fn wrap_and_set_position(&mut self, position: u64) {
+    self.cursor.set_position(self.wrap_value(position));
+  }
+
+  fn wrap_value(&self, position: u64) -> u64 {
+    position % self.slice().len() as u64
+  }
+
+  fn wrap_signed_value(&self, position: i64) -> i64 {
+    position.rem_euclid(self.slice().len() as i64)
   }
 }
 
@@ -54,7 +68,7 @@ impl<T: AsRef<[u8]>> Read for RepeatSlice<T> {
       return io::repeat(self.slice()[0]).read(buf);
     }
     let read_amt = self.cursor.read(buf)?;
-    self.wrap_position();
+    self.wrap_cursor_position();
     Ok(read_amt)
   }
 }
@@ -66,7 +80,16 @@ impl<T: AsRef<[u8]>> BufRead for RepeatSlice<T> {
 
   fn consume(&mut self, amt: usize) {
     self.cursor.consume(amt);
-    self.wrap_position();
+    self.wrap_cursor_position();
+  }
+}
+
+impl<T: AsRef<[u8]>> SeekRelative for RepeatSlice<T> {
+  fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
+    let offset = self.wrap_signed_value(offset);
+    let position = u64::checked_add_signed(self.cursor.position(), offset).ok_or(InvalidInput)?;
+    self.wrap_and_set_position(position);
+    Ok(())
   }
 }
 
