@@ -19,12 +19,17 @@ pub const MAGIC: &[u8] = b"PPF";
 const BLOCK_CHECK_LENGTH: u16 = 1024;
 
 /// Applies a PPF patch to a ROM.
-pub fn patch(
-  rom: &mut (impl BufRead + Seek),
-  patch: &mut (impl BufRead + Seek + Peek),
-  output: &mut impl BufWrite,
+pub fn patch<R, P, O>(
+  rom: &mut R,
+  patch: &mut P,
+  output: &mut O,
   strict: bool,
-) -> io::Result<Result<(), PatchingError>> {
+) -> io::Result<Result<(), PatchingError>>
+where
+  R: BufRead + Seek + ?Sized,
+  P: Peek + Seek + ?Sized,
+  O: BufWrite + ?Sized,
+{
   let mut patch = Patch(PositionTracker::from_start(patch));
   let mut rom = PositionTracker::from_start(rom);
   let mut hasher = crc32fast::Hasher::new();
@@ -118,7 +123,7 @@ struct Patch<T>(T);
 
 impl<T> Patch<PositionTracker<&mut T>>
 where
-  T: BufRead + Seek + Peek,
+  T: BufRead + Seek + Peek + ?Sized,
 {
   /// Parses the PPF header and footer and performs block check validation.
   ///
@@ -270,7 +275,7 @@ where
   }
 }
 
-impl<T: Read> Patch<PositionTracker<&mut T>> {
+impl<T: Read + ?Sized> Patch<PositionTracker<&mut T>> {
   fn hash_validation_block(&mut self) -> io::Result<Result<u32, PatchingError>> {
     let mut hashing_writer = HashingWriter::new(io::sink(), crc32fast::Hasher::new());
     try2!(

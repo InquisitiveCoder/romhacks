@@ -9,18 +9,18 @@
 //! to avoid pre-maturely discarding a [`BufReader`][3]'s internal buffer.
 //!
 //! Other common tasks that this crate addresses:
-//! * [`exactly`][4] asserts that the expected number of bytes were read.
-//! * [`peek`][5] and [`peek_len`][6] provide efficient ways to look ahead into
+//! * [`exactly()`][4] asserts that the expected number of bytes were read.
+//! * [`peek()`][5] and [`peek_len()`][6] provide efficient ways to look ahead into
 //!   any buffered reader.
-//! * [`read_n`][7] is useful for one-off reads.
-//! * [`copy_to_slice`][8] fills up a slice as much as possible
-//! * [`reached_eof`][9] expresses intent more clearly than
+//! * [`read_n()`][7] is useful for one-off reads.
+//! * [`copy_to_slice()`][8] fills up a slice as much as possible
+//! * [`reached_eof()`][9] expresses intent more clearly than
 //!   `fill_buf()?.is_empty()`.
-//! * [`if_not_eof`][10] provides a way to handle optional data at the end of a
+//! * [`if_not_eof()`][10] provides a way to handle optional data at the end of a
 //!   reader.
 //! * The [`BufWrite`][11] trait can be used to ensure consumers of your code
 //!   provide a writer that's suitable for small, frequent writes.
-//! * [`RepeatSlice`][12] provides a more general version of [`io::repeat`][13].
+//! * [`RepeatSlice`][12] provides a more general version of [`io::repeat()`][13].
 //!
 //! Simply `use read_write_utils::prelude::*` to import all traits, macros, and
 //! [`PositionTracker`][1].
@@ -79,7 +79,7 @@ pub const DEFAULT_BUF_SIZE: usize = if cfg!(target_os = "espidf") { 512 } else {
 /// assert!(!peek_eq!(reader, &[4, 5, 6])?);
 /// # Ok::<(), std::io::Error>(())
 /// ```
-/// [1]: prelude::BufReadExt::peek
+/// [1]: prelude::Peek::peek
 #[macro_export]
 macro_rules! peek_eq {
   ($reader:expr, $const_slice:expr) => {{

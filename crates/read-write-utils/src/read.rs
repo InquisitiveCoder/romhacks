@@ -50,7 +50,7 @@ pub trait ReadExt: Read {
   /// // All bytes were copied.
   /// assert_eq!(
   ///    reader.copy_to_slice(&mut buffer[..])?,
-  ///    reader.get_ref().len() as u64
+  ///    reader.get_ref().len()
   /// );
   /// assert!(reader.reached_eof()?);
   ///
@@ -70,7 +70,7 @@ pub trait ReadExt: Read {
   /// // The number of bytes copied is the size of the buffer.
   /// assert_eq!(
   ///   reader.copy_to_slice(&mut buffer[..])?,
-  ///   buffer.len() as u64
+  ///   buffer.len()
   /// );
   ///
   /// // The buffer matches the first two bytes of the vector.
@@ -212,7 +212,7 @@ pub trait BufReadExt: BufRead {
 }
 impl<R: BufRead> BufReadExt for R {}
 
-/// Utility methods for [`io::take()`] adapters.
+/// Utility methods for [`Read::take()`] adapters.
 pub trait TakeExt {
   /// Executes an I/O operation and asserts that it read exactly
   /// [`self.limit()`][1] bytes.

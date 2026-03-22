@@ -1,5 +1,5 @@
 use crate::error::prelude::*;
-use crate::patch::find_patch_kind;
+use crate::patch::{find_patch_kind, UnknownPatchKindError};
 use crate::{filename, hack, manifest, patch};
 use fs_err as fs;
 use read_write_utils::DEFAULT_BUF_SIZE;
@@ -35,7 +35,7 @@ impl Args {
       .write(true)
       .open(temp_file_name.as_str())?;
 
-    let patch_kind = find_patch_kind(&mut patch)?;
+    let patch_kind = find_patch_kind(&mut patch)??;
     let patcher = patch::Patcher::from_patch_kind(patch_kind);
 
     let mut rom = BufReader::new(rom);
@@ -107,6 +107,8 @@ pub enum Error {
   IO(#[from] io::Error),
   #[error(transparent)]
   Patching(#[from] patch::Error),
+  #[error(transparent)]
+  UnknownPatchKind(#[from] UnknownPatchKindError),
 }
 
 impl Error {
@@ -122,6 +124,7 @@ impl Error {
       },
       Error::IO(_) => K::IOError,
       Error::Patching(_) => K::Patching,
+      Error::UnknownPatchKind(_) => K::UnknownPatchKind,
     }
   }
 }
@@ -130,6 +133,7 @@ impl Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ErrorKind {
   IOError,
+  UnknownPatchKind,
   BadManifest,
   AlreadyPatched,
   ManifestOutdated,

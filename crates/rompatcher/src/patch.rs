@@ -16,7 +16,10 @@ use std::io::SeekFrom;
 
 pub use self::err::*;
 
-pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
+pub fn find_patch_kind<F>(mut file: &mut F) -> io::Result<Result<Kind, UnknownPatchKindError>>
+where
+  F: Read + Seek + ?Sized,
+{
   let magic = file.read_n::<3>()?;
   file.seek(SeekFrom::Start(0))?;
   let kind = match &magic[..] {
@@ -25,9 +28,9 @@ pub fn find_patch_kind(file: &mut (impl Read + Seek)) -> io::Result<Kind> {
     bps::MAGIC => Kind::Bps,
     ppf::MAGIC => Kind::Ppf,
     vcd::MAGIC => Kind::Vcd,
-    _ => return Err(io::Error::from(io::ErrorKind::InvalidData)),
+    _ => return Ok(Err(UnknownPatchKindError(()))),
   };
-  Ok(kind)
+  Ok(Ok(kind))
 }
 
 #[derive(Copy, Clone, Debug)]

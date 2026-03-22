@@ -52,12 +52,13 @@ impl process::Termination for Error {
       Error::Cli(_) => 1,
       Error::ApplyPatch(err) => match err.get_kind() {
         K::IOError => 2,
-        K::BadManifest => 3,
-        K::AlreadyPatched => 4,
-        K::ManifestOutdated => 5,
-        K::Patching => 6,
+        K::UnknownPatchKind => 3,
+        K::Patching => 4,
+        K::BadManifest => 5,
+        K::AlreadyPatched => 6,
+        K::ManifestOutdated => 7,
       },
-      Error::Validation(_) => 2,
+      Error::Validation(_) => 4,
     })
   }
 }

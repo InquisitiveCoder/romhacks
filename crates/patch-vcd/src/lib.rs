@@ -20,13 +20,15 @@ const VCD_DECOMPRESS: u8 = 1;
 const VCD_CODETABLE: u8 = 2;
 const HAS_APPHEADER: u8 = 4;
 
-pub fn patch<O>(
-  rom: &mut (impl BufRead + Seek),
-  patch: &mut (impl BufRead + Seek + Peek),
+pub fn patch<R, P, O>(
+  rom: &mut R,
+  patch: &mut P,
   output: &mut O,
 ) -> io::Result<Result<(), PatchingError>>
 where
-  O: BufWrite + AsRead + Seek,
+  R: BufRead + Seek + ?Sized,
+  P: Peek + Seek + ?Sized,
+  O: BufWrite + AsRead + Seek + ?Sized,
 {
   let rom = PositionTracker::from_start(rom);
   let mut patch = PositionTracker::from_start(patch);

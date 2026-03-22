@@ -44,7 +44,7 @@ pub trait Peek: BufRead + SeekRelative {
   /// The [`peek_eq!`][4] macro provides a convenient way to call `peek`
   /// and compare the result to a `const` slice or slice literal.
   ///
-  /// The [`peek`] function provides an alternative for types that implement
+  /// The [`peek()`] function provides an alternative for types that implement
   /// [`Seek`] and can't implement [`SeekRelative`].
   ///
   /// # Errors
@@ -181,7 +181,7 @@ where
 ///
 /// This provides a workaround when a type from an external crate implements
 /// [`Seek`], but not [`SeekRelative`].
-fn peek<'a, S, F>(
+pub fn peek<'a, S, F>(
   mut reader: &'a mut S,
   buf: &'a mut [u8],
   seek_relative: F,
@@ -208,7 +208,7 @@ where
 ///
 /// This provides a workaround when a type from an external crate implements
 /// [`Seek`], but not [`SeekRelative`].
-fn peek_len<S, F>(reader: &mut S, amt: usize, seek_relative: F) -> io::Result<Ordering>
+pub fn peek_len<S, F>(reader: &mut S, amt: usize, seek_relative: F) -> io::Result<Ordering>
 where
   S: BufRead + ?Sized,
   F: FnOnce(&mut S, i64) -> io::Result<()>,

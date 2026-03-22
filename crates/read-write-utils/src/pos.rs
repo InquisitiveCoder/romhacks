@@ -195,7 +195,10 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// [1]: io::copy
   /// [2]: Self::take
-  pub fn copy_exactly(&mut self, amount: u64, writer: &mut impl Write) -> io::Result<u64> {
+  pub fn copy_exactly<W>(&mut self, amount: u64, writer: &mut W) -> io::Result<u64>
+  where
+    W: Write + ?Sized,
+  {
     self.take_exactly(amount, |reader| reader.copy_to(writer))
   }
 
@@ -212,7 +215,10 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// [1]: io::copy
   /// [2]: Self::take_until
-  pub fn copy_until(&mut self, pos: u64, writer: &mut impl Write) -> io::Result<u64> {
+  pub fn copy_until<W>(&mut self, pos: u64, writer: &mut W) -> io::Result<u64>
+  where
+    W: Write + ?Sized,
+  {
     self.take_until(pos, |reader| reader.copy_to(writer))
   }
 
@@ -263,17 +269,18 @@ impl<R: Read> PositionTracker<R> {
   ///
   /// # Examples
   /// ```
+  /// use std::io;
   /// use std::io::prelude::*;
-  /// use std::io::{copy, sink, Cursor};
+  /// use std::io::Cursor;
   /// use read_write_utils::pos::PositionTracker;
   ///
-  /// let mut reader = PositionTracker::from_start(Cursor::new(vec![0u8, 1, 2, 3, 4]));
+  /// let mut reader = PositionTracker::from_start(Cursor::new([0u8, 1, 2, 3, 4]));
   ///
-  /// let bytes_read = reader.take(4, |take| copy(take, &mut sink()));
+  /// let bytes_read = (&mut reader).take(4, |take| io::copy(take, &mut io::sink()));
   /// assert_eq!(bytes_read.unwrap(), 4);
   /// assert_eq!(reader.position(), 4);
   ///
-  /// let bytes_read = reader.take(4, |take| copy(take, &mut sink()));
+  /// let bytes_read = (&mut reader).take(4, |take| io::copy(take, &mut io::sink()));
   /// assert_eq!(bytes_read.unwrap(), 1);
   /// assert_eq!(reader.position(), 5);
   /// ```
