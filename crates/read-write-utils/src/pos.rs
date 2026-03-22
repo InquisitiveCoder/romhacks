@@ -1,5 +1,6 @@
 use crate::prelude::*;
 use crate::repeat::RepeatSlice;
+use crate::seek::SeekRelative;
 use checked_signed_diff::prelude::*;
 use std::io;
 use std::io::prelude::*;
@@ -384,10 +385,10 @@ impl<S: SeekRelative> SeekRelative for PositionTracker<S> {
   /// Calls [`seek_relative`][1] on the inner stream and updates
   /// [`self.position()`][2].
   ///
-  /// [1]: SeekRelative::seek_relative
+  /// [1]: SeekRelative::relative_seek
   /// [2]: Self::position
-  fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
-    SeekRelative::seek_relative(&mut self.inner, offset)?;
+  fn relative_seek(&mut self, offset: i64) -> io::Result<()> {
+    SeekRelative::relative_seek(&mut self.inner, offset)?;
     self.increment_position_signed(offset);
     Ok(())
   }

@@ -21,7 +21,7 @@ const BLOCK_CHECK_LENGTH: u16 = 1024;
 /// Applies a PPF patch to a ROM.
 pub fn patch(
   rom: &mut (impl BufRead + Seek),
-  patch: &mut (impl BufRead + Seek),
+  patch: &mut (impl BufRead + Seek + Peek),
   output: &mut impl BufWrite,
   strict: bool,
 ) -> io::Result<Result<(), PatchingError>> {
@@ -116,7 +116,10 @@ pub fn patch(
 
 struct Patch<T>(T);
 
-impl<T: BufRead + Seek> Patch<PositionTracker<&mut T>> {
+impl<T> Patch<PositionTracker<&mut T>>
+where
+  T: BufRead + Seek + Peek,
+{
   /// Parses the PPF header and footer and performs block check validation.
   ///
   /// `patch`'s cursor must be at the start of the file, and `eof` must be the

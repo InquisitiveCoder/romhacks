@@ -22,7 +22,7 @@ const HAS_APPHEADER: u8 = 4;
 
 pub fn patch<O>(
   rom: &mut (impl BufRead + Seek),
-  patch: &mut (impl BufRead + Seek),
+  patch: &mut (impl BufRead + Seek + Peek),
   output: &mut O,
 ) -> io::Result<Result<(), PatchingError>>
 where

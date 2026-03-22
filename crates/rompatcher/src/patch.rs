@@ -7,6 +7,7 @@ use patch_ups as ups;
 use patch_vcd as vcd;
 use read_write_hashers::{HashingReader, HashingWriter, MonotonicHashingReader};
 use read_write_utils::prelude::*;
+use read_write_utils::seek::SeekRelative;
 use rompatcher_crc32_utils::CRC32Hasher;
 use std::fmt;
 use std::io;
@@ -78,7 +79,7 @@ impl Patcher {
   ) -> Result<Checksums, Error>
   where
     R: AmortizedRead + BufRead + SeekRelative + Seek,
-    P: BufRead + Seek,
+    P: BufRead + Seek + Peek,
     O: BufWrite + AsRead + Seek,
   {
     match self.0 {
@@ -154,7 +155,7 @@ impl Patcher {
   ) -> Result<Checksums, Error>
   where
     R: BufRead + Seek,
-    P: BufRead + Seek,
+    P: BufRead + Seek + Peek,
     O: BufWrite + AsRead,
   {
     let mut rom = MonotonicHashingReader::from_start(rom, CRC32Hasher::new());
@@ -174,7 +175,7 @@ impl Patcher {
   fn vcdiff<R, P, O>(rom: &mut R, patch: &mut P, output: &mut O) -> Result<Checksums, Error>
   where
     R: BufRead + Seek,
-    P: BufRead + Seek,
+    P: BufRead + Seek + Peek,
     O: BufWrite + AsRead + Seek,
   {
     let mut rom = MonotonicHashingReader::from_start(rom, CRC32Hasher::new());

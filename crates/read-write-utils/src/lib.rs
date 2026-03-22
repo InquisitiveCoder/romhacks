@@ -29,8 +29,8 @@
 //! [2]: ::std::io::Seek::seek_relative
 //! [3]: ::std::io::BufReader
 //! [4]: prelude::TakeExt::exactly
-//! [5]: prelude::BufReadExt::peek
-//! [6]: prelude::BufReadExt::peek_len
+//! [5]: prelude::Peek::peek
+//! [6]: prelude::Peek::peek_len
 //! [7]: prelude::ReadExt::read_n
 //! [8]: prelude::ReadExt::copy_to_slice
 //! [9]: prelude::BufReadExt::reached_eof
@@ -83,13 +83,12 @@ pub const DEFAULT_BUF_SIZE: usize = if cfg!(target_os = "espidf") { 512 } else {
 #[macro_export]
 macro_rules! peek_eq {
   ($reader:expr, $const_slice:expr) => {{
-    use read_write_utils::prelude::*;
     let mut buf = [0u8; $const_slice.len()];
     $reader.peek(&mut buf).map(|slice| slice == $const_slice)
   }};
 }
 
-/// Negates the result of [`peek_eq!`](crate::prelude::peek_eq).
+/// Negates the result of [`peek_eq!`](peek_eq).
 #[macro_export]
 macro_rules! peek_ne {
   ($reader:expr, $const_slice:expr) => {
@@ -128,7 +127,7 @@ macro_rules! peek_ne {
 #[macro_export]
 macro_rules! read_array_eq {
   ($reader:expr, $const_slice:expr) => {{
-    use read_write_utils::prelude::*;
+    use ::read_write_utils::prelude::*;
     $reader
       .read_n::<{ $const_slice.len() }>()
       .map(|array| &array[..] == $const_slice)

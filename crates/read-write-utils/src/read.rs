@@ -1,10 +1,8 @@
-use polonius_the_crab::prelude::*;
-use std::cmp::Ordering;
 use std::io;
 use std::io::prelude::*;
-use std::io::ErrorKind::{Interrupted, InvalidInput, UnexpectedEof};
-use std::io::{BufReader, StdinLock};
+use std::io::ErrorKind::{Interrupted, UnexpectedEof};
 
+/// Utility methods for readers.
 pub trait ReadExt: Read {
   /// Equivalent to `io::copy(self, writer)`. This can be useful if you need to
   /// call [`io::copy`] at the end of a method chain.
@@ -139,15 +137,11 @@ pub trait ReadExt: Read {
     self.read_exact(&mut arr)?;
     Ok(arr)
   }
-
-  #[doc(hidden)]
-  fn seal_trait(_: private::Internal);
 }
 
-impl<R: Read> ReadExt for R {
-  fn seal_trait(_: private::Internal) {}
-}
+impl<R: Read> ReadExt for R {}
 
+/// Utility methods for buffered readers.
 pub trait BufReadExt: BufRead {
   /// Checks if `self` has reached EOF.
   ///
@@ -215,106 +209,10 @@ pub trait BufReadExt: BufRead {
     }
     Ok(Some(f(self)?))
   }
-
-  /// Peeks at the next `buf.len()` bytes in the reader. The returned slice's
-  /// length can be smaller than `buf` if EOF is reached.
-  ///
-  /// This method first attempts to return `buf.len()` bytes from
-  /// [`self.fill_buf()`][1]. Otherwise, [`self.copy_to_slice(buf)`][2] will
-  /// be called, followed by a backwards [`seek_relative`][3] to return `self`
-  /// to its former position.
-  ///
-  /// For peeks much smaller than the size of the reader's internal buffer,
-  /// there's a high probability that the copy and seek are avoided.
-  ///
-  /// The [`peek_eq!`][4] macro provides a convenient way to call `peek`
-  /// and compare the result to a `const` slice or slice literal.
-  ///
-  /// # Errors
-  /// This method can return any error from [`fill_buf`][1], [`io::copy`] and
-  /// [`seek_relative`][3].
-  ///
-  /// # Examples
-  /// ```
-  /// # use std::io;
-  /// # use std::io::{Cursor, SeekFrom};
-  /// # use std::io::prelude::*;
-  /// # use read_write_utils::prelude::*;
-  /// #
-  /// let mut reader = Cursor::new([0u8, 1, 2, 3, 4, 5, 6, 7]);
-  /// let mut buf = [0u8; 3];
-  /// assert_eq!(reader.peek(&mut buf[..])?, &[0, 1, 2]);
-  /// reader.set_position(6);
-  /// assert_eq!(reader.peek(&mut buf[..])?, &[6, 7]);
-  /// # Ok::<(), io::Error>(())
-  /// ```
-  ///
-  /// [1]: BufRead::fill_buf
-  /// [2]: ReadExt::copy_to_slice
-  /// [3]: Seek::seek_relative
-  /// [4]: crate::peek_eq!
-  fn peek<'a>(&'a mut self, buf: &'a mut [u8]) -> io::Result<&'a [u8]>
-  where
-    Self: Seek,
-  {
-    // the polonius macro seems to misbehave when its pseudo-parameter is self.
-    let mut reader = self;
-    polonius!(|reader| -> Result<&'polonius [u8], io::Error> {
-      let inner_buf = polonius_try!(reader.fill_buf());
-      if let Some(slice) = inner_buf.get(0..buf.len()) {
-        polonius_return!(Ok(slice));
-      }
-    });
-    let copy_amt = reader.copy_to_slice(buf)?;
-    // The only way to overflow this cast is with a 9 exabyte slice.
-    reader.seek_relative(-(copy_amt as i64))?;
-    Ok(&buf[0..copy_amt])
-  }
-
-  /// [Compares][1] the remaining number of bytes in the reader to `amt`.
-  ///
-  /// This method first compares the length of the slice returned by
-  /// [`fill_buf`][2]; if it's greater than `amt`, that result is returned.
-  /// Otherwise, up to `amt + 1` bytes are read from `self`, followed by a
-  /// backwards [`seek_relative`][6] to return `self` to its former position.
-  /// The number of bytes read is then compared to `amt`.
-  ///
-  /// If `amt` is much smaller than the size of the reader's internal buffer,
-  /// there's a high probability that the copy and seek are avoided.
-  ///
-  /// # Errors
-  /// If `amt + 1` can't be converted to an `i64`, this method returns
-  /// [`InvalidInput`]. Otherwise, see [`std::io::copy`] and
-  /// [`seek_relative`][6].
-  ///
-  /// [1]: Ord::cmp
-  /// [2]: BufRead::fill_buf
-  /// [3]: io::Take::take
-  /// [4]: io::copy
-  /// [5]: io::sink
-  /// [6]: Seek::seek_relative
-  fn peek_len(&mut self, amt: usize) -> io::Result<Ordering>
-  where
-    Self: Seek,
-  {
-    i64::try_from(amt).map_err(|_| InvalidInput)?;
-    use Ordering::Greater;
-    if let Greater = self.fill_buf()?.len().cmp(&amt) {
-      return Ok(Greater);
-    }
-    // All casts and arithmetic below this line are safe since amt <= i64::MAX.
-    let copy_amt = self.take(amt as u64 + 1).copy_to(&mut io::sink())?;
-    self.seek_relative(-(copy_amt as i64))?;
-    Ok(copy_amt.cmp(&(amt as u64)))
-  }
-
-  #[doc(hidden)]
-  fn seal_trait(_: private::Internal);
 }
-impl<R: BufRead> BufReadExt for R {
-  fn seal_trait(_: private::Internal) {}
-}
+impl<R: BufRead> BufReadExt for R {}
 
+/// Utility methods for [`io::take()`] adapters.
 pub trait TakeExt {
   /// Executes an I/O operation and asserts that it read exactly
   /// [`self.limit()`][1] bytes.
@@ -351,9 +249,6 @@ pub trait TakeExt {
   /// [1]: io::Take::limit
   /// [2]: Read::read_exact
   fn exactly<R>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<R>) -> io::Result<R>;
-
-  #[doc(hidden)]
-  fn seal_trait(_: private::Internal);
 }
 
 impl<I> TakeExt for io::Take<I> {
@@ -364,8 +259,6 @@ impl<I> TakeExt for io::Take<I> {
     }
     Ok(result)
   }
-
-  fn seal_trait(_: private::Internal) {}
 }
 
 /// Readers that support small, frequent reads like [`BufRead`] but don't
@@ -376,31 +269,26 @@ impl<I> TakeExt for io::Take<I> {
 pub trait AmortizedRead: Read {}
 impl AmortizedRead for &[u8] {}
 impl AmortizedRead for io::Empty {}
-impl AmortizedRead for StdinLock<'_> {}
+impl AmortizedRead for io::StdinLock<'_> {}
 impl<R: AmortizedRead + ?Sized> AmortizedRead for &mut R {}
 impl<R: AmortizedRead + ?Sized> AmortizedRead for Box<R> {}
-impl<R> AmortizedRead for BufReader<R> where BufReader<R>: BufRead {}
+impl<R> AmortizedRead for io::BufReader<R> where io::BufReader<R>: BufRead {}
 impl<T> AmortizedRead for io::Cursor<T> where io::Cursor<T>: BufRead {}
 impl<R> AmortizedRead for io::Take<R> where io::Take<R>: BufRead {}
 impl<T, U> AmortizedRead for io::Chain<T, U> where io::Chain<T, U>: BufRead {}
 impl AmortizedRead for io::Repeat {}
 impl<T> AmortizedRead for crate::repeat::RepeatSlice<T> where crate::repeat::RepeatSlice<T>: Read {}
 
-mod private {
-  pub struct Internal;
-}
-
 #[cfg(test)]
 mod test {
   use super::*;
-  use std::io::BufReader;
 
   #[test]
   fn copy_to_slice_multiple_reads() -> io::Result<()> {
     // Use a BufReader with limited capacity to force the read loop to iterate
     // more than once.
     let reader = io::Cursor::new(vec![1u8, 2, 3, 4, 5]);
-    let mut reader = BufReader::with_capacity(2, reader);
+    let mut reader = io::BufReader::with_capacity(2, reader);
     let mut buf = [0u8; 5];
     let bytes_copied = reader.copy_to_slice(&mut buf)?;
     assert_eq!(bytes_copied, buf.len());
@@ -408,7 +296,3 @@ mod test {
     Ok(())
   }
 }
-
-trait BufRead2: BufRead + AmortizedRead {}
-
-impl<T> BufRead2 for T where T: BufRead + AmortizedRead {}

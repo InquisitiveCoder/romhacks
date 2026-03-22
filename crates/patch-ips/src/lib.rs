@@ -3,6 +3,7 @@
 use byteorder::{ReadBytesExt, BE};
 use read_write_utils::prelude::*;
 use read_write_utils::read::AmortizedRead;
+use read_write_utils::seek::SeekRelative;
 use result_result_try::try2;
 use rompatcher_err::prelude::*;
 use std::io;
@@ -96,7 +97,7 @@ fn apply_patch(
     };
 
     // Skip over the patched bytes in the input file.
-    rom.seek_relative(i64::from(hunk_size.get()))?;
+    rom.relative_seek(i64::from(hunk_size.get()))?;
   }
 
   let truncated_size = patch

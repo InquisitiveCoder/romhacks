@@ -1,4 +1,4 @@
-use crate::prelude::SeekRelative;
+use crate::seek::SeekRelative;
 use io::ErrorKind::InvalidInput;
 use std::io;
 use std::io::prelude::*;
@@ -85,7 +85,7 @@ impl<T: AsRef<[u8]>> BufRead for RepeatSlice<T> {
 }
 
 impl<T: AsRef<[u8]>> SeekRelative for RepeatSlice<T> {
-  fn seek_relative(&mut self, offset: i64) -> io::Result<()> {
+  fn relative_seek(&mut self, offset: i64) -> io::Result<()> {
     let offset = self.wrap_signed_value(offset);
     let position = u64::checked_add_signed(self.cursor.position(), offset).ok_or(InvalidInput)?;
     self.wrap_and_set_position(position);
@@ -96,6 +96,7 @@ impl<T: AsRef<[u8]>> SeekRelative for RepeatSlice<T> {
 #[cfg(test)]
 mod test {
   use super::*;
+  use crate::prelude::*;
 
   #[test]
   #[should_panic]
@@ -144,6 +145,18 @@ mod test {
     assert_ne!(repeat.fill_buf()?.len(), 0);
     repeat.read_exact(buf)?;
     assert_eq!(buf, &[1, 2]);
+    Ok(())
+  }
+
+  #[test]
+  pub fn test_seek_relative() -> io::Result<()> {
+    let mut repeat = RepeatSlice::new(&[1, 2, 3]);
+    // Test wrapping backwards.
+    repeat.relative_seek(-1)?;
+    assert!(peek_eq!(repeat, &[3])?);
+    // Test wrapping forward.
+    repeat.relative_seek(2)?;
+    assert!(peek_eq!(repeat, &[2, 3])?);
     Ok(())
   }
 }

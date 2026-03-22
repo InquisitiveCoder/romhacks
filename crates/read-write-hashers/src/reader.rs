@@ -1,3 +1,4 @@
+use read_write_utils::prelude::SeekRelative;
 use std::hash::Hasher;
 use std::io;
 use std::io::prelude::*;
@@ -102,6 +103,16 @@ where
 {
   fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
     self.inner.seek(pos)
+  }
+}
+
+impl<S, H> SeekRelative for HashingReader<S, H>
+where
+  S: SeekRelative,
+  H: Hasher,
+{
+  fn relative_seek(&mut self, offset: i64) -> io::Result<()> {
+    self.inner.relative_seek(offset)
   }
 }
 
